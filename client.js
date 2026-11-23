@@ -83,6 +83,12 @@ window.__ModuleLoader__.load({
 .fai-tab.is-active .fai-tab-badge { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
   color: var(--dsw-alias-brand-primary); }
 .fai-panel { display: flex; flex-direction: column; gap: 16px; }
+.fai-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1); }
+.fai-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
+.fai-status-text { font-weight: 600; font-size: 13px; }
 `
 
     const fmtNum = (n) => {
@@ -183,6 +189,106 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'fai-hero' },
         h('div', { className: 'fai-hero-mark' }, h(BrandMark)),
         text)
+    }
+
+    /** 一行「值 + 复制」的只读字段。 */
+    function CopyRow({ label, value, mono, hint, onCopied }) {
+      const copy = () => {
+        try {
+          void navigator.clipboard.writeText(value || '')
+          if (onCopied) onCopied(label)
+        } catch {
+          // 剪贴板不可用时用户可手动选中
+        }
+      }
+      return h(Field, { label },
+        h('input', {
+          className: 'fai-input',
+          readOnly: true,
+          value: value || '—',
+          onFocus: (e) => e.target.select(),
+          style: mono === false ? undefined : { fontFamily: 'ui-monospace,monospace', maxWidth: 460 },
+        }),
+        h('button', { className: 'fai-btn', onClick: copy, disabled: !value }, '复制'),
+        hint ? h('span', { className: 'fai-card-hint' }, hint) : null)
+    }
+
+    /** 连接状态徽标：ok / fail / unknown。 */
+    function StatusBadge({ state, text, detail }) {
+      const cls = state === 'ok' ? 'fai-ok' : state === 'fail' ? 'fai-err' : 'fai-warn'
+      const label = state === 'ok' ? '连接正常' : state === 'fail' ? '连接失败' : '未检测'
+      return h('div', { className: 'fai-status' },
+        h('span', { className: 'fai-status-dot ' + cls }),
+        h('span', { className: 'fai-status-text ' + cls }, text || label),
+        detail ? h('span', { className: 'fai-card-hint' }, detail) : null)
+    }
+
+    /**
+     * 每个分栏顶部的「怎么连」区块：完整链接 + 密钥 + 实测状态。
+     * 这是用户真正要照着填到 Folia 里的东西。
+     */
+    function ConnectCard({ kind, status, draft, busy, check, checking, result, onCopied, extra }) {
+      const isAi = kind === 'ai'
+      const origin = (status && status.origin) || ''
+      const chatUrl = (status && status.chatUrl) || (origin ? origin + '/v1/chat/completions' : '')
+      const syncUrl = (status && status.syncEndpoint) || origin
+      const tokenRequired = isAi ? Boolean(status && status.tokenRequired) : Boolean(status && status.syncTokenRequired)
+      const tokenValue = isAi ? (draft?.token ?? '') : (draft?.syncToken ?? '')
+      const placeholder = tokenRequired ? '已设置（留空则不修改）' : '未设置（留空则不校验）'
+
+      const r = result || {}
+
+      return h('div', { className: 'fai-card' },
+        h('div', { className: 'fai-card-head' },
+          h('div', null,
+            h('div', { className: 'fai-card-title' }, isAi ? '连接信息 · AI 主题' : '连接信息 · 外观同步'),
+            h('div', { className: 'fai-card-hint' },
+              isAi
+                ? '照着下面的地址与密钥填到 Folia 的「AI 服务 → 自定义兼容接口」。'
+                : '照着下面的地址与密钥填到 Folia 的「连接与集成 → 同步服务」。')),
+          h('button', {
+            className: 'fai-btn',
+            disabled: checking,
+            onClick: check,
+          }, checking ? '检测中…' : '检测连接')),
+        h('div', { className: 'fai-card-body' },
+          h(StatusBadge, {
+            state: r.state || 'unknown',
+            text: r.text,
+            detail: r.detail,
+          }),
+
+          isAi
+            ? h(CopyRow, { label: '接口地址', value: chatUrl, hint: 'Folia「接口地址」填这个', onCopied })
+            : h(CopyRow, { label: 'Sync 地址', value: syncUrl, hint: 'Folia「Sync Server 地址」填这个', onCopied }),
+
+          isAi
+            ? h(CopyRow, { label: '模型名', value: (status && (status.model || status.defaultModel)) || '', hint: 'Folia「模型」可填这个，或点「获取模型」', onCopied })
+            : h(CopyRow, {
+              label: '看板地址',
+              value: status && status.dashboardEnabled ? (status.dashboardUrl || '') : '',
+              hint: status && status.dashboardEnabled ? '浏览器打开可看同步状态（需 dashboardToken）' : '未设置 dashboardToken，看板已关闭',
+              onCopied,
+            }),
+
+          h(Field, { label: '密钥 / Token' },
+            h('input', {
+              className: 'fai-input',
+              type: 'password',
+              placeholder,
+              value: tokenValue,
+              disabled: !draft || busy,
+              onChange: (e) => setDraft((prev) => (isAi
+                ? { ...prev, token: e.target.value }
+                : { ...prev, syncToken: e.target.value })),
+              style: { fontFamily: 'ui-monospace,monospace', maxWidth: 460 },
+            }),
+            h('span', { className: 'fai-card-hint' },
+              tokenRequired
+                ? (isAi ? '填到 Folia「API 密钥」' : '填到 Folia「Bearer Token」')
+                : '当前不校验，Folia 里随便填一个非空值即可')),
+
+          extra || null))
     }
 
     function ModelCard({ status, providers, draft, setDraft, busy, save, toast }) {
@@ -516,12 +622,17 @@ window.__ModuleLoader__.load({
           setData(next)
           setError('')
           setDraft({
-            provider: next.status.provider || '',
-            model: next.status.model || '',
-            reasoningEffort: next.status.reasoningEffort || 'auto',
+            // 用「配置里显式写了什么」初始化，而不是解析后的默认值：
+            // 否则一次保存就把当时的默认模型钉死成固定配置。
+            provider: next.status.configuredProvider ?? '',
+            model: next.status.configuredModel ?? '',
+            reasoningEffort: next.status.configuredReasoningEffort ?? 'auto',
             maxTokens: next.status.maxTokens,
             temperature: next.status.temperature,
             token: '',
+            syncEnabled: next.status.syncEnabled !== false,
+            syncToken: '',
+            dashboardToken: '',
           })
         } catch (e) {
           if (alive.current) setError(e && e.message ? e.message : String(e))
@@ -578,6 +689,58 @@ window.__ModuleLoader__.load({
         }
       }, [flash, load])
 
+      /**
+       * 真实连通性检测：调 Host 的 /folia-ai/selfcheck，
+       * 它内部会真的跑一次模型请求 + 真的读一次同步库。
+       */
+      const [checking, setChecking] = useState(false)
+      const [checkResult, setCheckResult] = useState(null)
+
+      const runCheck = useCallback(async () => {
+        setChecking(true)
+        try {
+          const res = await fetch(ENDPOINT + '/selfcheck', { headers: { accept: 'application/json' } })
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          const r = await res.json()
+          setCheckResult(r)
+          const aiOk = r.ai && r.ai.ok
+          const syncOk = r.sync && r.sync.ok
+          flash(aiOk && syncOk ? '两项都正常' : (aiOk || syncOk ? '部分正常' : '两项都失败'),
+            aiOk && syncOk ? 'ok' : 'err')
+        } catch (e) {
+          setCheckResult({ error: (e && e.message) || String(e) })
+          flash('检测失败', 'err')
+        } finally {
+          setChecking(false)
+        }
+      }, [flash])
+
+      const flashCopied = useCallback((label) => {
+        flash('已复制' + (label ? '：' + label : ''), 'ok')
+      }, [flash])
+
+      const aiCheck = useMemo(() => {
+        if (!checkResult) return { state: 'unknown' }
+        if (checkResult.error) return { state: 'fail', text: '检测失败', detail: checkResult.error }
+        const ai = checkResult.ai || {}
+        return ai.ok
+          ? { state: 'ok', text: `连接正常 · ${ai.ms}ms`, detail: `${ai.provider} / ${ai.model}　回复: ${ai.reply || '（空）'}` }
+          : { state: 'fail', text: '连接失败', detail: ai.error || '未知错误' }
+      }, [checkResult])
+
+      const syncCheck = useMemo(() => {
+        if (!checkResult) return { state: 'unknown' }
+        if (checkResult.error) return { state: 'fail', text: '检测失败', detail: checkResult.error }
+        const s = checkResult.sync || {}
+        return s.ok
+          ? {
+            state: 'ok',
+            text: `连接正常 · ${s.ms}ms`,
+            detail: `已存 ${s.themeCount} 个主题${s.settingsUpdatedAt ? ' + 视觉设置' : ''}　${(s.bytes / 1024).toFixed(1)} KB`,
+          }
+          : { state: 'fail', text: '连接失败', detail: s.error || '未知错误' }
+      }, [checkResult])
+
       if (error && !data) {
         return h('div', { className: 'fai-root' },
           h('div', { className: 'fai-card' },
@@ -601,11 +764,31 @@ window.__ModuleLoader__.load({
       }, label, badge ? h('span', { className: 'fai-tab-badge' }, badge) : null)
 
       const aiPanel = h('div', { className: 'fai-panel', role: 'tabpanel' },
+        h(ConnectCard, {
+          kind: 'ai',
+          status,
+          draft,
+          busy,
+          checking,
+          check: runCheck,
+          result: aiCheck,
+          onCopied: flashCopied,
+        }),
         h(ModelCard, { status, providers, draft, setDraft, busy, save, toast: null }),
         h(UsageCard, { stats: data && data.stats, busy, resetStats }),
         h(RecentCard, { stats: data && data.stats }))
 
       const syncPanel = h('div', { className: 'fai-panel', role: 'tabpanel' },
+        h(ConnectCard, {
+          kind: 'sync',
+          status,
+          draft,
+          busy,
+          checking,
+          check: runCheck,
+          result: syncCheck,
+          onCopied: flashCopied,
+        }),
         h(SyncCard, { status, sync: syncInfo, draft, setDraft, busy, save }),
         h(StorageCard, { sync: syncInfo }))
 

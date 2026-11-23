@@ -579,9 +579,20 @@ export function apply(ctx, rawConfig = {}) {
     return {
       ok: Boolean(llm && typeof llm.stream === 'function'),
       endpoint: '/v1/chat/completions',
+      /** Folia「接口地址」要填的完整值。 */
+      chatUrl: origin ? `${origin}/v1/chat/completions` : null,
+      modelsUrl: origin ? `${origin}/v1/models` : null,
       origin,
       provider: fixedProvider || base?.provider || null,
       model: fixedModel || base?.model || null,
+      /**
+       * 配置里「显式写了」的值（空 = 跟随默认）。
+       * 设置页的草稿必须从这里初始化，不能从上面解析后的默认值初始化，
+       * 否则一保存就把当时的默认模型钉死成固定配置。
+       */
+      configuredProvider: fixedProvider,
+      configuredModel: fixedModel,
+      configuredReasoningEffort: effortSetting,
       defaultProvider: base?.provider ?? null,
       defaultModel: base?.model ?? null,
       reasoningEffort: effortSetting,
@@ -593,11 +604,82 @@ export function apply(ctx, rawConfig = {}) {
       syncEnabled,
       syncTokenRequired: Boolean(syncToken),
       dashboardEnabled: Boolean(dashboardToken),
-      syncEndpoint: origin ? `${origin}` : null,
+      /** Folia「Sync Server 地址」要填的完整值。 */
+      syncEndpoint: origin || null,
+      dashboardUrl: origin && dashboardToken ? `${origin}/folia-ai/dashboard` : null,
+      syncDbPath: syncDbPathSetting || defaultSyncDbPath(),
     }
   }
 
   const handleStatus = async (req, res) => sendJson(res, 200, await statusPayload())
+
+  /**
+   * 真实连通性自检：不是看配置，而是实际发一次最小模型请求 + 读一次同步库，
+   * 把「能不能用」分成 ai / sync 两条分别报回来。
+   */
+  const handleSelfCheck = async (req, res) => {
+    const checkedAt = new Date().toISOString()
+    const ai = { ok: false }
+    const sync = { ok: false }
+
+    // --- AI：真跑一次模型 ---
+    const started = Date.now()
+    try {
+      const llm = llmOf()
+      const base = defaultSelection()
+      const provider = fixedProvider || base?.provider
+      const model = fixedModel || base?.model
+      if (!provider || !model) throw new Error('no model is configured')
+      const chunks = generate(llm, {
+        provider,
+        model,
+        text: 'Reply with the single word OK.',
+        system: '',
+        temperature: 0,
+        maxTokens: 24,
+        reasoningEffort: await resolveEffort(llm, provider, model),
+        signal: AbortSignal.timeout(30000),
+      }, null)
+      const result = await chunks
+      ai.ok = true
+      ai.provider = provider
+      ai.model = model
+      ai.ms = Date.now() - started
+      ai.reply = (result.text || '').trim().slice(0, 60)
+      ai.usage = result.usage ? usagePayload(result.usage) : null
+    } catch (error) {
+      ai.ms = Date.now() - started
+      ai.error = errorText(error)
+    }
+
+    // --- 同步：真读一次库 ---
+    const syncStarted = Date.now()
+    try {
+      if (!syncEnabled) throw new Error('the sync service is turned off')
+      const store = storeOf()
+      const state = await store.state()
+      const usage = await store.usage(storePath)
+      sync.ok = true
+      sync.ms = Date.now() - syncStarted
+      sync.themeCount = state.themeCount
+      sync.settingsUpdatedAt = state.settingsUpdatedAt
+      sync.themesUpdatedAt = state.themesUpdatedAt
+      sync.bytes = usage.bytes
+      sync.dbPath = storePath
+      sync.url = (() => {
+        try {
+          return ctx.webServer.getOrigin()
+        } catch {
+          return null
+        }
+      })()
+    } catch (error) {
+      sync.ms = Date.now() - syncStarted
+      sync.error = errorText(error)
+    }
+
+    sendJson(res, 200, { checkedAt, ai, sync })
+  }
 
   const handleOverview = async (req, res) => {
     const llm = ctx.get('llm')
@@ -830,6 +912,7 @@ h1{font-size:18px;margin:0 0 4px}
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/v1/chat/completions', handler: route(handleChat) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/v1/models', handler: route(handleModels) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/status', handler: route(handleStatus, false) }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/selfcheck', handler: route(handleSelfCheck, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/overview', handler: route(handleOverview, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/config', handler: route(handleConfig, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/stats/reset', handler: route(handleStatsReset, false) }))
