@@ -69,6 +69,20 @@ window.__ModuleLoader__.load({
 .fai-err { color: var(--dsw-alias-state-error-primary); }
 .fai-empty { padding: 20px; text-align: center; color: var(--dsw-alias-label-secondary); font-size: 12.5px; }
 .fai-toast { font-size: 12px; }
+.fai-tabs { display: flex; gap: 4px; padding: 3px; border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); width: fit-content; }
+.fai-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: none; border-radius: 8px;
+  background: transparent; color: var(--dsw-alias-label-secondary); font-size: 13px; cursor: pointer;
+  font-family: inherit; transition: background .12s, color .12s; }
+.fai-tab:hover { color: var(--dsw-alias-label-primary); }
+.fai-tab.is-active { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.fai-tab-badge { min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; line-height: 17px;
+  text-align: center; font-weight: 500; background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary); }
+.fai-tab.is-active .fai-tab-badge { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);
+  color: var(--dsw-alias-brand-primary); }
+.fai-panel { display: flex; flex-direction: column; gap: 16px; }
 `
 
     const fmtNum = (n) => {
@@ -434,6 +448,55 @@ window.__ModuleLoader__.load({
           actions))
     }
 
+    function StorageCard({ sync }) {
+      const usage = sync && sync.usage
+      const bytes = usage && typeof usage.bytes === 'number' ? usage.bytes : null
+      const counts = (usage && usage.counts) || {}
+      const dbPath = (sync && sync.dbPath) || (usage && usage.dbPath) || '—'
+      const lastAt = sync && sync.themesUpdatedAt ? new Date(sync.themesUpdatedAt).toLocaleString() : '—'
+      const settingsAt = sync && sync.settingsUpdatedAt ? new Date(sync.settingsUpdatedAt).toLocaleString() : '—'
+
+      const human = (n) => {
+        if (n === null) return '—'
+        if (n < 1024) return n + ' B'
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+        return (n / 1024 / 1024).toFixed(2) + ' MB'
+      }
+
+      const copyPath = () => {
+        try {
+          void navigator.clipboard.writeText(dbPath)
+        } catch {
+          // 剪贴板不可用时手动选中
+        }
+      }
+
+      return h('div', { className: 'fai-card' },
+        h('div', { className: 'fai-card-head' },
+          h('div', null,
+            h('div', { className: 'fai-card-title' }, '存储情况'),
+            h('div', { className: 'fai-card-hint' }, '同步数据落在下面这个 SQLite 文件里，备份复制它即可。'))),
+        h('div', { className: 'fai-card-body' },
+          h('div', { className: 'fai-stat-grid' },
+            h(Stat, { key: 'size', label: '占用空间', value: human(bytes) }),
+            h(Stat, { key: 'themes', label: '主题条数', value: String(counts.themes ?? 0) }),
+            h(Stat, { key: 'buckets', label: '非空分桶', value: String(counts.buckets ?? 0) + ' / 256' }),
+            h(Stat, { key: 'settings', label: '视觉设置', value: (counts.settings ?? 0) > 0 ? '已保存' : '无' })),
+          h(Field, { label: '存储位置' },
+            h('input', {
+              className: 'fai-input',
+              readOnly: true,
+              value: dbPath,
+              onFocus: (e) => e.target.select(),
+              style: { fontFamily: 'ui-monospace,monospace', maxWidth: 460 },
+            }),
+            h('button', { className: 'fai-btn', onClick: copyPath }, '复制')),
+          h('div', { className: 'fai-row' },
+            h('div', { className: 'fai-row-label' }, '最近同步'),
+            h('div', { className: 'fai-row-body' },
+              h('span', { className: 'fai-card-hint' }, '主题：' + lastAt + '　设置：' + settingsAt)))))
+    }
+
     function SettingsPage() {
       useStyleOnce()
       const [data, setData] = useState(null)
@@ -441,6 +504,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [toast, setToast] = useState(null)
       const [draft, setDraft] = useState(null)
+      const [activeTab, setActiveTab] = useState('ai')
       const alive = useRef(true)
 
       const load = useCallback(async () => {
@@ -523,28 +587,34 @@ window.__ModuleLoader__.load({
       }
 
       const providers = (data && data.providers) || []
+      const status = data && data.status
+      const syncInfo = data && data.sync
+      const themeCount = syncInfo && typeof syncInfo.themeCount === 'number' ? syncInfo.themeCount : 0
+      const callCount = (data && data.stats && data.stats.totals && data.stats.totals.calls) || 0
+
+      const tab = (id, label, badge) => h('button', {
+        key: id,
+        className: 'fai-tab' + (activeTab === id ? ' is-active' : ''),
+        onClick: () => setActiveTab(id),
+        role: 'tab',
+        'aria-selected': activeTab === id,
+      }, label, badge ? h('span', { className: 'fai-tab-badge' }, badge) : null)
+
+      const aiPanel = h('div', { className: 'fai-panel', role: 'tabpanel' },
+        h(ModelCard, { status, providers, draft, setDraft, busy, save, toast: null }),
+        h(UsageCard, { stats: data && data.stats, busy, resetStats }),
+        h(RecentCard, { stats: data && data.stats }))
+
+      const syncPanel = h('div', { className: 'fai-panel', role: 'tabpanel' },
+        h(SyncCard, { status, sync: syncInfo, draft, setDraft, busy, save }),
+        h(StorageCard, { sync: syncInfo }))
 
       return h('div', { className: 'fai-root' },
-        h(Hero, { status: data && data.status, stats: data && data.stats }),
-        h(SyncCard, {
-          status: data && data.status,
-          sync: data && data.sync,
-          draft,
-          setDraft,
-          busy,
-          save,
-        }),
-        h(ModelCard, {
-          status: data && data.status,
-          providers,
-          draft,
-          setDraft,
-          busy,
-          save,
-          toast: null,
-        }),
-        h(UsageCard, { stats: data && data.stats, busy, resetStats }),
-        h(RecentCard, { stats: data && data.stats }),
+        h(Hero, { status, stats: data && data.stats }),
+        h('div', { className: 'fai-tabs', role: 'tablist' },
+          tab('ai', 'AI 主题', callCount > 0 ? String(callCount) : null),
+          tab('sync', '同步服务', themeCount > 0 ? String(themeCount) : null)),
+        activeTab === 'ai' ? aiPanel : syncPanel,
         toast ? h('div', { className: 'fai-toast ' + (toast.kind === 'err' ? 'fai-err' : 'fai-ok') }, toast.text) : null)
     }
 

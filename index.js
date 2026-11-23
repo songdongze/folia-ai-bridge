@@ -613,7 +613,9 @@ export function apply(ctx, rawConfig = {}) {
     if (syncEnabled) {
       try {
         const store = storeOf()
-        sync = { enabled: true, ...(await store.dashboard()), dbPath: storePath, tokenRequired: Boolean(syncToken) }
+        const board = await store.dashboard()
+        const usage = await store.usage(storePath)
+        sync = { enabled: true, ...board, dbPath: storePath, usage, tokenRequired: Boolean(syncToken) }
       } catch (error) {
         sync = { enabled: true, error: errorText(error), dbPath: storePath }
       }
@@ -841,7 +843,10 @@ h1{font-size:18px;margin:0 0 4px}
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/put', handler: syncRoute(handleSyncThemesPut) }))
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/bucket', handler: syncRoute(handleSyncThemesBucket) }))
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/list', handler: syncRoute(handleSyncThemesList) }))
-    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/', handler: syncRoute(handleSyncDashboard, { needAuth: false }) }))
+    // 看板挂自己的路径，不要把根路径 / 让给看板：DSH 桌面端靠 /?token=... 做宿主认证，
+    // 占用 / 会让认证拿到 500（见 2026-11-23 修复）。同时 dashboard 自己校验 token 并写 res，
+    // 必须用 route()（会传 req, res）而不是只传 req 的 syncRoute()。
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/dashboard', handler: route(handleSyncDashboard, false) }))
 
     ctx.effect(() => () => {
       if (store) {

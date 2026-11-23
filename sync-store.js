@@ -14,6 +14,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import { statSync } from 'node:fs'
 
 export const SCHEMA_VERSION = 1
 const THEME_BUCKET_COUNT = 256
@@ -264,6 +265,28 @@ export function openStore(path) {
     }
   }
 
+  /** 存储用量：库文件实际字节数（含 WAL），以及各表的行数。 */
+  const usage = async (dbPath) => {
+    const sizes = {}
+    let total = 0
+    for (const suffix of ['', '-wal', '-shm']) {
+      const file = `${dbPath}${suffix}`
+      try {
+        const bytes = statSync(file).size
+        sizes[suffix || 'main'] = bytes
+        total += bytes
+      } catch {
+        // 文件不存在就不计入
+      }
+    }
+    const counts = {
+      themes: Number(db.prepare('SELECT COUNT(*) AS c FROM themes').get()?.c ?? 0),
+      buckets: Number(db.prepare('SELECT COUNT(*) AS c FROM theme_buckets WHERE count > 0').get()?.c ?? 0),
+      settings: Number(db.prepare('SELECT COUNT(*) AS c FROM settings').get()?.c ?? 0),
+    }
+    return { bytes: total, files: sizes, counts, dbPath }
+  }
+
   return {
     state,
     getSettings,
@@ -273,6 +296,7 @@ export function openStore(path) {
     putThemes,
     listThemes,
     dashboard,
+    usage,
     close: () => db.close(),
   }
 }
