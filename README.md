@@ -1,7 +1,10 @@
 # Folia AI 桥接
 
-把 DeepSeek Harness 里已经配置好的模型，对外暴露成一个 **OpenAI 兼容接口**，让 Folia 的
-「AI 供应商 → 自定义兼容接口」直接用它生成歌词主题 —— 不必再为音乐播放器单独准备一份 API 密钥。
+一个 DSH 插件，把 DeepSeek Harness 里已经配置好的模型对外暴露成 **OpenAI 兼容接口**，
+并自带 **Folia 同步服务** —— 装一个插件，Folia 的 AI 主题和外观同步都齐了。
+
+- **AI 主题**：Folia 用「AI 供应商 → 自定义兼容接口」走 DSH 的模型，不必再准备一份 API 密钥。
+- **外观同步**：内置 `folia-major/sync-server` 的完整协议，主题与视觉设置跨设备同步。
 
 > 需要 [DeepSeek Harness](https://github.com/deepseek-ai) 与自己部署的 [Folia](https://github.com/chthollyphile/folia-major)。
 > 本插件是一个 DSH bundle，不是 Folia 模组。
@@ -16,7 +19,7 @@ git clone <本仓库地址> folia-ai-bridge
 然后在 DSH 里：**插件** → **添加插件** → 选择上面克隆出来的 `folia-ai-bridge` 目录。
 安装后设置里会多出「Folia AI 桥接」一页。
 
-## 三步接上
+## 功能一：AI 主题
 
 1. DSH 设置 → **Folia AI 桥接**，确认状态显示「服务可用」。
 2. Folia 设置 → **AI 服务**：
@@ -25,6 +28,35 @@ git clone <本仓库地址> folia-ai-bridge
    - API 密钥随便填一个非空值（例如 `dsh`）；只有在 DSH 里设了「访问令牌」时才需要填那个令牌
    - 点「获取模型」挑一个，或手填
 3. 回 Folia 点「测试连接」，显示 `连接成功 · HTTP 200` 即可。
+
+## 功能二：外观同步
+
+1. DSH 设置 → **Folia AI 桥接** → **同步服务** 卡片：确认已开启，复制显示的**同步地址**，
+   并记下或填一个 **Bearer Token**。
+2. Folia 设置 → **连接与集成** → **同步服务**：
+   - **Sync Server 地址**填同步地址（默认 `http://127.0.0.1:13691`）
+   - **Bearer Token**填上一步的值
+3. 点「测试」，成功后就能「同步 AI 主题」「同步视觉设置」了。
+
+> 地址与 Token 都在设置页里现成显示/复制，不用自己拼。
+> 同步库默认放在 `~/.dsh/folia-sync/folia-sync.db`（Windows 是 `%USERPROFILE%\.dsh\...`）。
+
+### 同步协议
+
+与官方 `folia-major/sync-server` 完全一致：同样的表结构、同样的 256 分桶、同样的增量哈希
+（`FNV-1a(fingerprint + \0 + updatedAt)` 异或累加），所以客户端缓存的 manifest 可以直接通用。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/state` | 设置/主题更新时间与主题总数 |
+| `GET` `PUT` | `/settings` | 读 / 写视觉设置 |
+| `GET` | `/themes/manifest` | 256 个分桶的摘要 |
+| `POST` | `/themes/get` | 按 fingerprint 批量取主题 |
+| `POST` | `/themes/put` | 批量写主题 |
+| `POST` | `/themes/bucket` | 按桶取主题（首次全量同步） |
+| `POST` | `/themes/list` | 分页列出主题 |
+| `GET` | `/?token=…` | 状态看板（需 `dashboardToken`） |
 
 ## 设置页能做什么
 
@@ -89,7 +121,8 @@ git clone <本仓库地址> folia-ai-bridge
 ## 开发
 
 ```powershell
-node selftest.mjs          # 35 项离线自测（假 ctx/llm/res，不需要 DSH 在跑）
+node selftest.mjs          # 35 项 AI 接口离线自测（假 ctx/llm/res，不需要 DSH 在跑）
+node sync-selftest.mjs     # 33 项同步存储自测（分桶/哈希/增量语义与官方逐位比对）
 node bench.mjs             # 单请求处理开销微基准
 node probe-folia-theme.mjs # 用 Folia 真实主题提示词打一次桥接，校验返回的 DualTheme
 ```

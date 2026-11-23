@@ -1,16 +1,29 @@
 /**
- * folia-ai-bridge —— 把 Harness 里配置好的模型暴露成 OpenAI 兼容接口，
- * 让 Folia 的「自定义兼容接口」用 DSH 的 AI 生成歌词主题。
+ * folia-ai-bridge —— 把 Harness 里的模型暴露成 OpenAI 兼容接口，并自带 Folia 同步服务。
  *
- * 对外路由：
+ * AI 接口：
  *   POST /v1/chat/completions  → 调 ctx.llm.stream，返回 chat.completion（支持 stream: true）
  *   GET  /v1/models            → 列出当前 provider 的模型（Folia「获取模型」用）
+ *
+ * 同步服务（协议与官方 folia-major/sync-server 一致）：
+ *   GET  /health               → 健康检查
+ *   GET  /state                → 设置/主题的更新时间与主题总数
+ *   GET  /settings             → 视觉设置
+ *   PUT  /settings             → 覆盖视觉设置
+ *   GET  /themes/manifest      → 256 个分桶的摘要，客户端据此做增量比对
+ *   POST /themes/get           → 按 fingerprint 批量取主题
+ *   POST /themes/put           → 批量写主题
+ *   POST /themes/bucket        → 按桶取主题（首次全量同步）
+ *   POST /themes/list          → 分页列出主题
+ *   GET  /                     → 同步状态看板（带 DASHBOARD_TOKEN 才能看）
+ *
+ * 设置页：
  *   GET  /folia-ai/status      → 自检
- *   GET  /folia-ai/overview    → 设置页用：状态 + 用量 + 模型目录 + 当前配置
- *   POST /folia-ai/config      → 设置页保存：provider / model / token 等
+ *   GET  /folia-ai/overview    → 状态 + 用量 + 模型目录 + 同步统计
+ *   POST /folia-ai/config      → 保存 provider / model / token / sync 开关
  *   POST /folia-ai/stats/reset → 清零用量
  *
- * 性能取向（热路径只有 /v1/chat/completions，其余是常数）：
+ * 性能取向（热路径只有 /v1/chat/completions 与同步接口，其余是常数）：
  *   1. 空闲零开销：无常驻 interval、无事件订阅；唯一可能的定时器是请求超时扫描，
  *      有请求才建、最后一个结束就清掉。
  *   2. 配置在 apply 时归一化一次，热路径不做 String()/parseFloat()/正则编译。
@@ -19,9 +32,13 @@
  *      文本用数组攒再一次性 join；res.write 背压时等 drain。
  *   5. 流式响应不留全文（客户端自己拼），只有非流式攒全文。
  *   6. 用量只进内存计数器，不落盘、不记请求内容，重启即清零。
+ *   7. 同步库用 Node 内置 node:sqlite，零原生依赖；库文件按需懒打开，不用同步就不建。
  */
 
 import { createCatalogue, createStats } from './stats.js'
+import { openStore } from './sync-store.js'
+import { mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 export const name = 'folia-ai-bridge'
 export const inject = ['webServer']
@@ -38,6 +55,14 @@ const DEFAULTS = Object.freeze({
   /** 输出上限（Folia 主题请求自己带 max_tokens，取两者较小值）。 */
   maxTokens: 8192,
   temperature: 0.7,
+  /** 同步服务开关。 */
+  syncEnabled: true,
+  /** Folia 里「Bearer Token」填的那个；空 = 同步接口不校验（只建议本机使用）。 */
+  syncToken: '',
+  /** 看板口令；空 = 关闭看板。 */
+  dashboardToken: '',
+  /** 同步库路径；空 = 放在 DSH 用户目录下。 */
+  syncDbPath: '',
 })
 
 const BODY_LIMIT = 1024 * 1024
@@ -124,6 +149,13 @@ export function apply(ctx, rawConfig = {}) {
   const maxTokensCap = Math.max(1, Math.floor(numberOr(raw.maxTokens, DEFAULTS.maxTokens)))
   const temperatureDefault = Math.min(2, Math.max(0, numberOr(raw.temperature, DEFAULTS.temperature)))
   const authPattern = token ? /^Bearer\s+(.+)$/i : null
+
+  // ---- 同步服务配置（同样只解析一次） ----
+  const syncEnabled = raw.syncEnabled !== false
+  const syncToken = String(raw.syncToken ?? DEFAULTS.syncToken ?? '').trim()
+  const dashboardToken = String(raw.dashboardToken ?? DEFAULTS.dashboardToken ?? '').trim()
+  const syncDbPathSetting = String(raw.syncDbPath ?? DEFAULTS.syncDbPath ?? '').trim()
+  const syncAuthPattern = syncToken ? /^Bearer\s+(.+)$/i : null
 
   const stats = createStats()
   const catalogue = createCatalogue()
@@ -558,6 +590,10 @@ export function apply(ctx, rawConfig = {}) {
       temperature: temperatureDefault,
       llmProviders: typeof llm?.listProviders === 'function' ? llm.listProviders().map((entry) => ({ id: entry.id, name: entry.name || entry.id })) : [],
       hasConfigEditor: Boolean(ctx.get('configEditor')),
+      syncEnabled,
+      syncTokenRequired: Boolean(syncToken),
+      dashboardEnabled: Boolean(dashboardToken),
+      syncEndpoint: origin ? `${origin}` : null,
     }
   }
 
@@ -573,7 +609,18 @@ export function apply(ctx, rawConfig = {}) {
         providers = []
       }
     }
-    sendJson(res, 200, { status: await statusPayload(), stats: stats.snapshot(), providers })
+    let sync = null
+    if (syncEnabled) {
+      try {
+        const store = storeOf()
+        sync = { enabled: true, ...(await store.dashboard()), dbPath: storePath, tokenRequired: Boolean(syncToken) }
+      } catch (error) {
+        sync = { enabled: true, error: errorText(error), dbPath: storePath }
+      }
+    } else {
+      sync = { enabled: false }
+    }
+    sendJson(res, 200, { status: await statusPayload(), stats: stats.snapshot(), providers, sync })
   }
 
   const handleConfig = async (req, res) => {
@@ -597,6 +644,9 @@ export function apply(ctx, rawConfig = {}) {
     if (typeof body.reasoningEffort === 'string') patch.reasoningEffort = body.reasoningEffort.trim()
     if (body.maxTokens !== undefined) patch.maxTokens = Math.max(1, Math.floor(numberOr(body.maxTokens, DEFAULTS.maxTokens)))
     if (body.temperature !== undefined) patch.temperature = Math.min(2, Math.max(0, numberOr(body.temperature, DEFAULTS.temperature)))
+    if (body.syncEnabled !== undefined) patch.syncEnabled = body.syncEnabled !== false
+    if (typeof body.syncToken === 'string') patch.syncToken = body.syncToken.trim()
+    if (typeof body.dashboardToken === 'string') patch.dashboardToken = body.dashboardToken.trim()
     if (Object.keys(patch).length === 0) return fail(res, 400, 'nothing to save')
 
     try {
@@ -633,6 +683,148 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
+  // ---- 同步服务 ----
+  /** 懒打开：不用同步就不建库、不占句柄。 */
+  let store = null
+  let storePath = ''
+
+  /** 同步库默认位置：DSH_HOME（DSH 自己设的）→ 用户目录下的 .dsh。 */
+  const defaultSyncDbPath = () => {
+    const home = process.env.DSH_HOME || join(process.env.USERPROFILE || process.env.HOME || process.cwd(), '.dsh')
+    return join(home, 'folia-sync', 'folia-sync.db')
+  }
+
+  const storeOf = () => {
+    if (store) return store
+    storePath = syncDbPathSetting || defaultSyncDbPath()
+    try {
+      mkdirSync(dirname(storePath), { recursive: true })
+    } catch {
+      // 目录已存在或无权限：让 openStore 自己报错
+    }
+    store = openStore(storePath)
+    log('info', `[folia-ai-bridge] sync store opened at ${storePath}`)
+    return store
+  }
+
+  const syncAuthorized = (req) => {
+    if (syncAuthPattern === null) return true
+    const match = syncAuthPattern.exec(String(req.headers.authorization ?? '').trim())
+    return Boolean(match) && match[1].trim() === syncToken
+  }
+
+  const readBody = async (req) => {
+    const chunks = []
+    let size = 0
+    for await (const chunk of req) {
+      size += chunk.length
+      if (size > BODY_LIMIT) throw new Error('request body is too large')
+      chunks.push(chunk)
+    }
+    const text = Buffer.concat(chunks).toString('utf8').trim()
+    if (!text) return null
+    return JSON.parse(text)
+  }
+
+  /** 同步接口的统一外壳：CORS、鉴权、错误归一。 */
+  const syncRoute = (handler, { needAuth = true } = {}) => async (req, res) => {
+    try {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, CORS)
+        res.end()
+        return
+      }
+      if (!syncEnabled) return fail(res, 503, 'the sync service is turned off in the plugin settings')
+      if (needAuth && !syncAuthorized(req)) {
+        return fail(res, 401, 'unauthorized: the Bearer token does not match syncToken')
+      }
+      const result = await handler(req)
+      sendJson(res, result?.status ?? 200, result?.body ?? result)
+    } catch (error) {
+      log('warn', `[folia-ai-bridge] sync ${req.method} ${req.url} failed: ${errorText(error)}`)
+      if (!res.headersSent) fail(res, 500, errorText(error))
+      else if (!res.writableEnded) res.end()
+    }
+  }
+
+  const dashboardPage = (state) => `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Folia 同步服务</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:light dark}
+body{font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:32px;background:#111;color:#eee}
+h1{font-size:18px;margin:0 0 4px}
+.sub{color:#888;margin-bottom:24px;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;max-width:760px}
+.card{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px}
+.num{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.label{color:#888;font-size:12px}
+.ok{color:#4ade80}
+</style></head>
+<body>
+<h1>Folia 同步服务</h1>
+<div class="sub"><span class="ok">●</span> 运行中 · 后端 folia-ai-bridge</div>
+<div class="grid">
+  <div class="card"><div class="num">${state.themeCount ?? 0}</div><div class="label">已同步主题</div></div>
+  <div class="card"><div class="num">${state.settingsUpdatedAt ? '有' : '无'}</div><div class="label">视觉设置</div></div>
+  <div class="card"><div class="num" style="font-size:13px;word-break:break-all">${state.themesUpdatedAt ?? '—'}</div><div class="label">主题更新时间</div></div>
+  <div class="card"><div class="num" style="font-size:13px;word-break:break-all">${state.settingsUpdatedAt ?? '—'}</div><div class="label">设置更新时间</div></div>
+</div>
+</body></html>`
+
+  const handleSyncHealth = async () => ({ ok: true, schemaVersion: 1, backend: 'folia-ai-bridge' })
+
+  const handleSyncState = async () => storeOf().state()
+
+  /** 同一路径按方法分流，保持官方协议（GET 读、PUT 写）。 */
+  const handleSyncSettings = async (req) => {
+    const method = (req.method ?? 'GET').toUpperCase()
+    if (method === 'GET') return storeOf().getSettings()
+    if (method === 'PUT' || method === 'POST') return storeOf().putSettings(await readBody(req))
+    return { status: 405, body: { ok: false, error: 'use GET or PUT' } }
+  }
+
+  const handleSyncManifest = async () => storeOf().manifest()
+
+  const handleSyncThemesGet = async (req) => {
+    const body = await readBody(req)
+    return storeOf().getThemes(body?.fingerprints)
+  }
+
+  const handleSyncThemesPut = async (req) => {
+    const body = await readBody(req)
+    return storeOf().putThemes(body?.themes)
+  }
+
+  const handleSyncThemesBucket = async (req) => {
+    const body = await readBody(req)
+    return storeOf().listThemes(body?.bucketIds, body?.limit)
+  }
+
+  const handleSyncThemesList = async (req) => {
+    const body = await readBody(req)
+    const limit = Math.min(Math.max(Number(body?.limit) || 500, 1), 1000)
+    const all = []
+    for (let start = 0; start < 256; start += 32) {
+      const ids = Array.from({ length: 32 }, (_, i) => start + i)
+      const page = await storeOf().listThemes(ids, 1000)
+      all.push(...(page.themes ?? []))
+    }
+    const offset = Math.max(Number(body?.offset) || 0, 0)
+    return { themes: all.slice(offset, offset + limit), total: all.length }
+  }
+
+  const handleSyncDashboard = async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://dsh.internal')
+    if (!dashboardToken) return fail(res, 404, 'dashboard is disabled (set dashboardToken in the plugin settings)')
+    if (url.searchParams.get('token') !== dashboardToken) {
+      return fail(res, 401, 'unauthorized: add ?token=<dashboardToken>')
+    }
+    const state = await storeOf().dashboard()
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+    res.end(dashboardPage(state))
+  }
+
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/v1/chat/completions', handler: route(handleChat) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/v1/models', handler: route(handleModels) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/status', handler: route(handleStatus, false) }))
@@ -640,5 +832,28 @@ export function apply(ctx, rawConfig = {}) {
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/config', handler: route(handleConfig, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/stats/reset', handler: route(handleStatsReset, false) }))
 
-  log('info', '[folia-ai-bridge] OpenAI-compatible endpoint ready at /v1/chat/completions')
+  if (syncEnabled) {
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/health', handler: syncRoute(handleSyncHealth, { needAuth: false }) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/state', handler: syncRoute(handleSyncState) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/settings', handler: syncRoute(handleSyncSettings) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/manifest', handler: syncRoute(handleSyncManifest) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/get', handler: syncRoute(handleSyncThemesGet) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/put', handler: syncRoute(handleSyncThemesPut) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/bucket', handler: syncRoute(handleSyncThemesBucket) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/themes/list', handler: syncRoute(handleSyncThemesList) }))
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/', handler: syncRoute(handleSyncDashboard, { needAuth: false }) }))
+
+    ctx.effect(() => () => {
+      if (store) {
+        try {
+          store.close()
+        } catch {
+          // 关闭失败不影响卸载
+        }
+        store = null
+      }
+    })
+  }
+
+  log('info', `[folia-ai-bridge] ready · AI at /v1/chat/completions${syncEnabled ? ' · sync at /state, /themes/*' : ' · sync disabled'}`)
 }

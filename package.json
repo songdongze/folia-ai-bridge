@@ -1,47 +1,53 @@
 {
-  "name": "@local/folia-ai-bridge",
-  "version": "1.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Exposes the Harness model as an OpenAI-compatible endpoint so Folia can generate AI themes with it.",
-  "keywords": [
-    "dsh",
-    "dsh-plugin",
-    "deepseek-harness",
-    "folia",
-    "openai-compatible"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/songdongze/folia-ai-bridge.git"
-  },
-  "bugs": {
-    "url": "https://github.com/songdongze/folia-ai-bridge/issues"
-  },
-  "homepage": "https://github.com/songdongze/folia-ai-bridge#readme",
-  "license": "MIT",
-  "author": "songdongze",
-  "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
-  },
-  "files": [
-    "index.js",
-    "client.js",
-    "stats.js",
-    "cordis.patch.yml",
-    "locale/*.json",
-    "README.md",
-    "icon.svg"
-  ],
-  "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": {
-      "platform": "web",
-      "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-settings"]
-    }
-  }
+    "name":  "@local/folia-ai-bridge",
+    "version":  "1.2.0",
+    "private":  true,
+    "type":  "module",
+    "description":  "Exposes the Harness model as an OpenAI-compatible endpoint so Folia can generate AI themes with it.",
+    "keywords":  [
+                     "dsh",
+                     "dsh-plugin",
+                     "deepseek-harness",
+                     "folia",
+                     "openai-compatible",
+                     "sync-server"
+                 ],
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/songdongze/folia-ai-bridge.git"
+                   },
+    "bugs":  {
+                 "url":  "https://github.com/songdongze/folia-ai-bridge/issues"
+             },
+    "homepage":  "https://github.com/songdongze/folia-ai-bridge#readme",
+    "license":  "MIT",
+    "author":  "songdongze",
+    "exports":  {
+                    ".":  "./index.js",
+                    "./client":  "./client.js",
+                    "./locale/*.json":  "./locale/*.json",
+                    "./icon":  "./icon.svg"
+                },
+    "files":  [
+                  "index.js",
+                  "client.js",
+                  "stats.js",
+                  "sync-store.js",
+                  "cordis.patch.yml",
+                  "locale/*.json",
+                  "README.md",
+                  "icon.svg"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "immediately":  true,
+                               "inject":  [
+                                              "@deepseek-ai/dsh-client-ui-settings"
+                                          ]
+                           }
+            }
 }

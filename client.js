@@ -357,6 +357,83 @@ window.__ModuleLoader__.load({
             h('tbody', null, rows))))
     }
 
+    function SyncCard({ status, sync, draft, setDraft, busy, save }) {
+      const enabled = draft?.syncEnabled !== false
+      const origin = (status && status.origin) || 'http://127.0.0.1:13691'
+      const tokenRequired = Boolean(status && status.syncTokenRequired)
+      const themeCount = sync && typeof sync.themeCount === 'number' ? sync.themeCount : 0
+      const hasSettings = Boolean(sync && sync.settingsUpdatedAt)
+
+      const copy = (text) => {
+        try {
+          void navigator.clipboard.writeText(text)
+        } catch {
+          // 剪贴板不可用时用户可手动选中
+        }
+      }
+
+      const addressRow = h(Field, { label: '同步地址' },
+        h('input', {
+          className: 'fai-input',
+          readOnly: true,
+          value: origin,
+          onFocus: (e) => e.target.select(),
+          style: { fontFamily: 'ui-monospace,monospace' },
+        }),
+        h('button', { className: 'fai-btn', onClick: () => copy(origin) }, '复制'))
+
+      const tokenRow = h(Field, { label: 'Bearer Token' },
+        h('input', {
+          className: 'fai-input',
+          type: 'password',
+          placeholder: tokenRequired ? '已设置，留空则保持不变' : '留空则不校验（仅建议本机）',
+          value: draft?.syncToken ?? '',
+          disabled: !draft || busy,
+          onChange: (e) => setDraft((prev) => ({ ...prev, syncToken: e.target.value })),
+        }),
+        h('span', { className: 'fai-card-hint' }, '填到 Folia 的「Bearer Token」'))
+
+      const toggleRow = h('div', { className: 'fai-row' },
+        h('div', { className: 'fai-row-label' }, '同步服务'),
+        h('div', { className: 'fai-row-body' },
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' } },
+            h('input', {
+              type: 'checkbox',
+              checked: enabled,
+              disabled: !draft || busy,
+              onChange: (e) => setDraft((prev) => ({ ...prev, syncEnabled: e.target.checked })),
+            }),
+            h('span', null, enabled ? '已开启' : '已关闭')),
+          h('span', { className: 'fai-card-hint' }, '关掉后 /state、/themes/* 等同步接口不再注册')))
+
+      const statsRow = h('div', { className: 'fai-stat-grid' },
+        h(Stat, { key: 'themes', label: '已同步主题', value: String(themeCount) }),
+        h(Stat, { key: 'settings', label: '视觉设置', value: hasSettings ? '有' : '无' }),
+        h(Stat, {
+          key: 'updated',
+          label: '主题更新时间',
+          value: sync && sync.themesUpdatedAt ? new Date(sync.themesUpdatedAt).toLocaleString() : '—',
+        }))
+
+      const actions = h('div', { className: 'fai-row' },
+        h('div', { className: 'fai-row-body', style: { justifyContent: 'flex-end' } },
+          h('button', { className: 'fai-btn fai-btn-primary', disabled: busy || !draft, onClick: save },
+            busy ? '保存中…' : '保存同步设置')))
+
+      return h('div', { className: 'fai-card' },
+        h('div', { className: 'fai-card-head' },
+          h('div', null,
+            h('div', { className: 'fai-card-title' }, '同步服务'),
+            h('div', { className: 'fai-card-hint' },
+              '用你自己的服务器同步外观设置与 AI 主题。填到 Folia：设置 → 连接与集成 → 同步服务。'))),
+        h('div', { className: 'fai-card-body' },
+          toggleRow,
+          addressRow,
+          tokenRow,
+          statsRow,
+          actions))
+    }
+
     function SettingsPage() {
       useStyleOnce()
       const [data, setData] = useState(null)
@@ -449,6 +526,14 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'fai-root' },
         h(Hero, { status: data && data.status, stats: data && data.stats }),
+        h(SyncCard, {
+          status: data && data.status,
+          sync: data && data.sync,
+          draft,
+          setDraft,
+          busy,
+          save,
+        }),
         h(ModelCard, {
           status: data && data.status,
           providers,

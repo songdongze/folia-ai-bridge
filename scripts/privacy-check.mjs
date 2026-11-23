@@ -24,6 +24,8 @@ const CHECKED = [
   'index.js',
   'client.js',
   'stats.js',
+  'sync-store.js',
+  'sync-selftest.mjs',
   'package.json',
   'cordis.patch.yml',
   'README.md',
