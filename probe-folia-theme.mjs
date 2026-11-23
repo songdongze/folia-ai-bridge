@@ -1,9 +1,43 @@
 // 用 Folia 真实的主题提示词打一次桥接接口，校验返回的 JSON 是否符合 Folia 的 DualTheme 形状。
+//
+// 用法：
+//   FOLIA_SRC=<Folia 源码目录> node probe-folia-theme.mjs
+//   或 node probe-folia-theme.mjs <Folia 源码目录>
+//   BRIDGE_URL / BRIDGE_TOKEN 可覆盖桥接地址与令牌。
+//
+// 需要一个正在运行的桥接（默认 http://127.0.0.1:13691），以及一份 Folia 源码，
+// 用来读取它真实的主题生成提示词。
+
 import { readFileSync } from 'node:fs'
 
-const source = readFileSync('D:\\Folia\\folia-major\\src\\utils\\aiThemePrompts.ts', 'utf8')
-const start = source.indexOf('export const THEME_GENERATION_PROMPT_PREFIX = `') + 'export const THEME_GENERATION_PROMPT_PREFIX = `'.length
+const FOLIA_SRC = process.env.FOLIA_SRC || process.argv[2]
+const BASE_URL = process.env.BRIDGE_URL || 'http://127.0.0.1:13691'
+const TOKEN = process.env.BRIDGE_TOKEN || ''
+
+if (!FOLIA_SRC) {
+  console.error('请指定 Folia 源码目录：FOLIA_SRC=<目录> node probe-folia-theme.mjs')
+  console.error('例如：FOLIA_SRC=./folia-major node probe-folia-theme.mjs')
+  process.exit(2)
+}
+
+const promptPath = `${FOLIA_SRC.replace(/[\\/]+$/, '')}/src/utils/aiThemePrompts.ts`
+
+let source
+try {
+  source = readFileSync(promptPath, 'utf8')
+} catch {
+  console.error(`读不到 Folia 的提示词文件：${promptPath}`)
+  process.exit(2)
+}
+
+const marker = 'export const THEME_GENERATION_PROMPT_PREFIX = `'
+const start = source.indexOf(marker) + marker.length
 const end = source.indexOf('`;', start)
+if (start < marker.length || end < 0) {
+  console.error('这个版本的 aiThemePrompts.ts 里找不到 THEME_GENERATION_PROMPT_PREFIX')
+  process.exit(2)
+}
+
 const systemPrompt = source.slice(start, end)
 console.log('system prompt chars:', systemPrompt.length)
 
@@ -17,7 +51,6 @@ const lyrics = `雨夜的末班车载着最后一群人
 我就把这条路走到底`
 
 const body = {
-  model: 'deepseek-v4.1-flash',
   messages: [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: `Pure instrumental: no\nSource snippet:\n${lyrics.slice(0, 2000)}` },
@@ -28,9 +61,12 @@ const body = {
 }
 
 const started = Date.now()
-const response = await fetch('http://127.0.0.1:13691/v1/chat/completions', {
+const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer dsh' },
+  headers: {
+    'Content-Type': 'application/json',
+    ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+  },
   body: JSON.stringify(body),
 })
 const raw = await response.text()
@@ -39,9 +75,10 @@ if (!response.ok) {
   console.log(raw)
   process.exit(1)
 }
+
 const payload = JSON.parse(raw)
 const content = payload.choices[0].message.content
-console.log('finish:', payload.choices[0].finish_reason, 'usage:', JSON.stringify(payload.usage))
+console.log('model:', payload.model, '| finish:', payload.choices[0].finish_reason, '| usage:', JSON.stringify(payload.usage))
 
 let theme
 try {

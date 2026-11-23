@@ -4,6 +4,23 @@
   "private": true,
   "type": "module",
   "description": "Exposes the Harness model as an OpenAI-compatible endpoint so Folia can generate AI themes with it.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "folia",
+    "openai-compatible"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/songdongze/folia-ai-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/songdongze/folia-ai-bridge/issues"
+  },
+  "homepage": "https://github.com/songdongze/folia-ai-bridge#readme",
+  "license": "MIT",
+  "author": "songdongze",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
