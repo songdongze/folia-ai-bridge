@@ -597,12 +597,16 @@ export function apply(ctx, rawConfig = {}) {
       defaultModel: base?.model ?? null,
       reasoningEffort: effortSetting,
       tokenRequired: Boolean(token),
+      /** 当前保存的 token，供设置页「一键复制」到 Folia。仅本机可见。 */
+      tokenValue: token,
       maxTokens: maxTokensCap,
       temperature: temperatureDefault,
       llmProviders: typeof llm?.listProviders === 'function' ? llm.listProviders().map((entry) => ({ id: entry.id, name: entry.name || entry.id })) : [],
       hasConfigEditor: Boolean(ctx.get('configEditor')),
       syncEnabled,
       syncTokenRequired: Boolean(syncToken),
+      /** 当前保存的同步 token，供设置页「一键复制」到 Folia。仅本机可见。 */
+      syncTokenValue: syncToken,
       dashboardEnabled: Boolean(dashboardToken),
       /** Folia「Sync Server 地址」要填的完整值。 */
       syncEndpoint: origin || null,

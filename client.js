@@ -233,8 +233,10 @@ window.__ModuleLoader__.load({
       const chatUrl = (status && status.chatUrl) || (origin ? origin + '/v1/chat/completions' : '')
       const syncUrl = (status && status.syncEndpoint) || origin
       const tokenRequired = isAi ? Boolean(status && status.tokenRequired) : Boolean(status && status.syncTokenRequired)
-      const tokenValue = isAi ? (draft?.token ?? '') : (draft?.syncToken ?? '')
-      const placeholder = tokenRequired ? '已设置（留空则不修改）' : '未设置（留空则不校验）'
+      // 面板的目的就是把「要填到 Folia 的东西」完整摆出来供复制。
+      // 已保存的 token 直接显示真实值（仅本机可见），未设置时给出提示而不是空密码框。
+      const savedToken = isAi ? (status && status.tokenValue) : (status && status.syncTokenValue)
+      const tokenValue = savedToken || (tokenRequired ? '' : (isAi ? 'dsh' : ''))
 
       const r = result || {}
 
@@ -271,22 +273,14 @@ window.__ModuleLoader__.load({
               onCopied,
             }),
 
-          h(Field, { label: '密钥 / Token' },
-            h('input', {
-              className: 'fai-input',
-              type: 'password',
-              placeholder,
-              value: tokenValue,
-              disabled: !draft || busy,
-              onChange: (e) => setDraft((prev) => (isAi
-                ? { ...prev, token: e.target.value }
-                : { ...prev, syncToken: e.target.value })),
-              style: { fontFamily: 'ui-monospace,monospace', maxWidth: 460 },
-            }),
-            h('span', { className: 'fai-card-hint' },
-              tokenRequired
-                ? (isAi ? '填到 Folia「API 密钥」' : '填到 Folia「Bearer Token」')
-                : '当前不校验，Folia 里随便填一个非空值即可')),
+          h(CopyRow, {
+            label: isAi ? 'API 密钥' : 'Bearer Token',
+            value: tokenValue,
+            hint: isAi
+              ? (tokenRequired ? '填到 Folia「API 密钥」' : '当前不校验，但 Folia 要求非空——直接复制这个值')
+              : (tokenRequired ? '填到 Folia「Bearer Token」' : '当前不校验，但 Folia 要求非空——直接复制这个值'),
+            onCopied,
+          }),
 
           extra || null))
     }
@@ -357,14 +351,15 @@ window.__ModuleLoader__.load({
           onChange: (e) => setDraft((prev) => ({ ...prev, temperature: Number(e.target.value) })),
         }))
 
-      const tokenField = h(Field, { label: '访问令牌' },
+      const tokenField = h(Field, { label: '修改 AI 令牌' },
         h('input', {
           className: 'fai-input', type: 'password',
           placeholder: status?.tokenRequired ? '已设置，留空则保持不变' : '留空则不校验',
           value: draft?.token ?? '',
           disabled: !draft || busy,
           onChange: (e) => setDraft((prev) => ({ ...prev, token: e.target.value })),
-        }))
+        }),
+        h('span', { className: 'fai-card-hint' }, '改了以后记得把新值复制到 Folia'))
 
       const actions = h('div', { className: 'fai-row' },
         h('div', { className: 'fai-row-body', style: { justifyContent: 'flex-end' } },
@@ -484,34 +479,21 @@ window.__ModuleLoader__.load({
       const themeCount = sync && typeof sync.themeCount === 'number' ? sync.themeCount : 0
       const hasSettings = Boolean(sync && sync.settingsUpdatedAt)
 
-      const copy = (text) => {
-        try {
-          void navigator.clipboard.writeText(text)
-        } catch {
-          // 剪贴板不可用时用户可手动选中
-        }
-      }
+      const savedToken = (status && status.syncTokenValue) || (tokenRequired ? '' : 'dsh')
 
-      const addressRow = h(Field, { label: '同步地址' },
-        h('input', {
-          className: 'fai-input',
-          readOnly: true,
-          value: origin,
-          onFocus: (e) => e.target.select(),
-          style: { fontFamily: 'ui-monospace,monospace' },
-        }),
-        h('button', { className: 'fai-btn', onClick: () => copy(origin) }, '复制'))
+      const addressRow = h(CopyRow, {
+        label: '同步地址',
+        value: origin,
+        hint: 'Folia「Sync Server 地址」填这个',
+        onCopied: () => {},
+      })
 
-      const tokenRow = h(Field, { label: 'Bearer Token' },
-        h('input', {
-          className: 'fai-input',
-          type: 'password',
-          placeholder: tokenRequired ? '已设置，留空则保持不变' : '留空则不校验（仅建议本机）',
-          value: draft?.syncToken ?? '',
-          disabled: !draft || busy,
-          onChange: (e) => setDraft((prev) => ({ ...prev, syncToken: e.target.value })),
-        }),
-        h('span', { className: 'fai-card-hint' }, '填到 Folia 的「Bearer Token」'))
+      const tokenRow = h(CopyRow, {
+        label: 'Bearer Token',
+        value: savedToken,
+        hint: tokenRequired ? '填到 Folia「Bearer Token」' : '当前不校验，直接复制这个值',
+        onCopied: () => {},
+      })
 
       const toggleRow = h('div', { className: 'fai-row' },
         h('div', { className: 'fai-row-label' }, '同步服务'),
@@ -535,6 +517,16 @@ window.__ModuleLoader__.load({
           value: sync && sync.themesUpdatedAt ? new Date(sync.themesUpdatedAt).toLocaleString() : '—',
         }))
 
+      const editTokenRow = h(Field, { label: '修改同步令牌' },
+        h('input', {
+          className: 'fai-input', type: 'password',
+          placeholder: tokenRequired ? '已设置，留空则保持不变' : '留空则不校验',
+          value: draft?.syncToken ?? '',
+          disabled: !draft || busy,
+          onChange: (e) => setDraft((prev) => ({ ...prev, syncToken: e.target.value })),
+        }),
+        h('span', { className: 'fai-card-hint' }, '改了以后记得把新值复制到 Folia'))
+
       const actions = h('div', { className: 'fai-row' },
         h('div', { className: 'fai-row-body', style: { justifyContent: 'flex-end' } },
           h('button', { className: 'fai-btn fai-btn-primary', disabled: busy || !draft, onClick: save },
@@ -550,6 +542,7 @@ window.__ModuleLoader__.load({
           toggleRow,
           addressRow,
           tokenRow,
+          editTokenRow,
           statsRow,
           actions))
     }
