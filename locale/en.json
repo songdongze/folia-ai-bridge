@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Folia AI bridge",
+    "description": "Serves the Harness model as an OpenAI-compatible /v1/chat/completions endpoint, so Folia's custom provider can generate lyrics themes with DSH's AI instead of another API key. Settings > Folia AI bridge picks the model, sets reasoning effort and output cap, and shows token usage per model with the latest requests."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Folia AI 桥接",
+    "description": "把 DSH 里配置好的模型暴露成 OpenAI 兼容接口（/v1/chat/completions），Folia 用「自定义兼容接口」填上本地地址，就能用 DSH 的 AI 生成歌词主题，不用再配一份 API 密钥。设置 → Folia AI 桥接 里可以选模型、调思考强度与输出上限、看每个模型的 token 用量和最近请求明细。"
+  }
+}

@@ -1,0 +1,4 @@
+- insert:
+    - id: folia-ai-bridge
+      name: '@local/folia-ai-bridge'
+      config: {}
