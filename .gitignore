@@ -6,3 +6,6 @@ Thumbs.db
 
 # æœ¬åœ°æ¢é’ˆäº§ç‰©
 probe-*.local.json
+
+# npm pack ²úÎï
+*.tgz
