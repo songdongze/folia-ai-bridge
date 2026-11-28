@@ -63,6 +63,15 @@ const DEFAULTS = Object.freeze({
   dashboardToken: '',
   /** 同步库路径；空 = 放在 DSH 用户目录下。 */
   syncDbPath: '',
+  /** 是否把用量明细落盘（关掉则只保留本次运行的内存统计）。 */
+  historyEnabled: true,
+  /** 明细保留天数，更早的滚成按天聚合后删除。 */
+  historyRetentionDays: 30,
+  /** 用量库路径；空 = 放在 DSH 用户目录下。 */
+  historyDbPath: '',
+  /** 费用估算单价（元 / 百万 token），纯展示用，不影响请求。 */
+  priceInputPerM: 0,
+  priceOutputPerM: 0,
 })
 
 const BODY_LIMIT = 1024 * 1024
@@ -157,14 +166,43 @@ export function apply(ctx, rawConfig = {}) {
   const syncDbPathSetting = String(raw.syncDbPath ?? DEFAULTS.syncDbPath ?? '').trim()
   const syncAuthPattern = syncToken ? /^Bearer\s+(.+)$/i : null
 
-  const stats = createStats()
-  const catalogue = createCatalogue()
+  // ---- 用量历史配置 ----
+  const historyEnabled = raw.historyEnabled !== false
+  const historyRetentionDays = Math.max(1, Math.floor(numberOr(raw.historyRetentionDays, DEFAULTS.historyRetentionDays)))
+  const historyDbPathSetting = String(raw.historyDbPath ?? DEFAULTS.historyDbPath ?? '').trim()
+  const priceInputPerM = Math.max(0, numberOr(raw.priceInputPerM, 0))
+  const priceOutputPerM = Math.max(0, numberOr(raw.priceOutputPerM, 0))
+
+  /** DSH 用户目录：DSH_HOME（DSH 自己设的）→ 用户目录下的 .dsh。 */
+  const dshHomeOf = () => process.env.DSH_HOME
+    || join(process.env.USERPROFILE || process.env.HOME || process.cwd(), '.dsh')
+
+  /** 同步库 / 用量库的默认位置。 */
+  const defaultDbPath = (file) => join(dshHomeOf(), 'folia-sync', file)
+  const defaultSyncDbPath = () => defaultDbPath('folia-sync.db')
+  const defaultHistoryDbPath = () => defaultDbPath('usage-history.db')
 
   const log = (level, message) => {
     const logger = ctx.logger
     if (logger && typeof logger[level] === 'function') logger[level](message)
     else if (typeof console[level] === 'function') console[level](message)
   }
+
+  const stats = createStats({
+    dbPath: () => {
+      const path = historyDbPathSetting || defaultHistoryDbPath()
+      try {
+        mkdirSync(dirname(path), { recursive: true })
+      } catch {
+        // 目录已存在或无权限：让 openUsageStore 自己报错
+      }
+      return path
+    },
+    persist: () => historyEnabled,
+    retentionDays: historyRetentionDays,
+    log,
+  })
+  const catalogue = createCatalogue()
 
   const sendJson = (res, status, payload) => {
     if (res.writableEnded) return
@@ -503,6 +541,9 @@ export function apply(ctx, rawConfig = {}) {
       ok,
       ms: Date.now() - startedAt,
       stream: streaming,
+      usage,
+      effort: request.reasoningEffort || '',
+      temperature: request.temperature,
     })
 
     try {
@@ -612,6 +653,10 @@ export function apply(ctx, rawConfig = {}) {
       syncEndpoint: origin || null,
       dashboardUrl: origin && dashboardToken ? `${origin}/folia-ai/dashboard` : null,
       syncDbPath: syncDbPathSetting || defaultSyncDbPath(),
+      historyEnabled,
+      historyRetentionDays,
+      historyDbPath: historyDbPathSetting || defaultHistoryDbPath(),
+      prices: { inputPerM: priceInputPerM, outputPerM: priceOutputPerM },
     }
   }
 
@@ -735,6 +780,13 @@ export function apply(ctx, rawConfig = {}) {
     if (body.syncEnabled !== undefined) patch.syncEnabled = body.syncEnabled !== false
     if (typeof body.syncToken === 'string') patch.syncToken = body.syncToken.trim()
     if (typeof body.dashboardToken === 'string') patch.dashboardToken = body.dashboardToken.trim()
+    if (body.historyEnabled !== undefined) patch.historyEnabled = body.historyEnabled !== false
+    if (body.historyRetentionDays !== undefined) {
+      patch.historyRetentionDays = Math.max(1, Math.floor(numberOr(body.historyRetentionDays, DEFAULTS.historyRetentionDays)))
+    }
+    if (typeof body.historyDbPath === 'string') patch.historyDbPath = body.historyDbPath.trim()
+    if (body.priceInputPerM !== undefined) patch.priceInputPerM = Math.max(0, numberOr(body.priceInputPerM, 0))
+    if (body.priceOutputPerM !== undefined) patch.priceOutputPerM = Math.max(0, numberOr(body.priceOutputPerM, 0))
     if (Object.keys(patch).length === 0) return fail(res, 400, 'nothing to save')
 
     try {
@@ -751,6 +803,59 @@ export function apply(ctx, rawConfig = {}) {
     if (!sameOrigin(req)) return fail(res, 403, 'cross-site request refused')
     stats.reset()
     sendJson(res, 200, { ok: true, stats: stats.snapshot() })
+  }
+
+  /** 历史用量：按时间范围返回总计、按模型、按天趋势与最近明细。 */
+  const handleHistory = async (req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    const range = url.searchParams.get('range') || '7d'
+    sendJson(res, 200, {
+      ...stats.history(range),
+      prices: { inputPerM: priceInputPerM, outputPerM: priceOutputPerM },
+      dbPath: historyDbPathSetting || defaultHistoryDbPath(),
+      persistEnabled: historyEnabled,
+    })
+  }
+
+  /** 明细分页（表格「加载更多」用）。 */
+  const handleHistoryPage = async (req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    const range = url.searchParams.get('range') || '7d'
+    const limit = Math.min(500, Math.max(1, Math.floor(numberOr(url.searchParams.get('limit'), 50))))
+    const offset = Math.max(0, Math.floor(numberOr(url.searchParams.get('offset'), 0)))
+    sendJson(res, 200, stats.historyPage(range, { limit, offset }))
+  }
+
+  /** 导出 CSV。 */
+  const handleHistoryExport = async (req, res) => {
+    if (!sameOrigin(req)) return fail(res, 403, 'cross-site request refused')
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    const range = url.searchParams.get('range') || 'all'
+    const result = stats.exportCsv(range)
+    if (!result) return fail(res, 503, 'usage history is turned off')
+    const stamp = new Date().toISOString().slice(0, 10)
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="folia-ai-usage-${range}-${stamp}.csv"`,
+      'Cache-Control': 'no-store',
+      ...CORS,
+    })
+    // BOM：让 Excel 正确识别 UTF-8
+    res.end('\uFEFF' + result.csv)
+  }
+
+  /** 清空历史（明细 + 归档），需二次确认由前端负责。 */
+  const handleHistoryClear = async (req, res) => {
+    if (req.method !== 'POST') return fail(res, 405, 'use POST')
+    if (!sameOrigin(req)) return fail(res, 403, 'cross-site request refused')
+    let removed = 0
+    try {
+      removed = stats.clearHistory()
+    } catch (error) {
+      return fail(res, 500, errorText(error))
+    }
+    stats.reset()
+    sendJson(res, 200, { ok: true, removed, stats: stats.snapshot() })
   }
 
   const route = (handler, requireToken = true) => async (req, res) => {
@@ -775,12 +880,6 @@ export function apply(ctx, rawConfig = {}) {
   /** 懒打开：不用同步就不建库、不占句柄。 */
   let store = null
   let storePath = ''
-
-  /** 同步库默认位置：DSH_HOME（DSH 自己设的）→ 用户目录下的 .dsh。 */
-  const defaultSyncDbPath = () => {
-    const home = process.env.DSH_HOME || join(process.env.USERPROFILE || process.env.HOME || process.cwd(), '.dsh')
-    return join(home, 'folia-sync', 'folia-sync.db')
-  }
 
   const storeOf = () => {
     if (store) return store
@@ -920,6 +1019,10 @@ h1{font-size:18px;margin:0 0 4px}
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/overview', handler: route(handleOverview, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/config', handler: route(handleConfig, false) }))
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/stats/reset', handler: route(handleStatsReset, false) }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/history', handler: route(handleHistory, false) }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/history/page', handler: route(handleHistoryPage, false) }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/history/export', handler: route(handleHistoryExport, false) }))
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/folia-ai/history/clear', handler: route(handleHistoryClear, false) }))
 
   if (syncEnabled) {
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/health', handler: syncRoute(handleSyncHealth, { needAuth: false }) }))

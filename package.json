@@ -1,6 +1,6 @@
 {
     "name":  "@local/folia-ai-bridge",
-    "version":  "1.5.0",
+    "version":  "1.6.0",
     "private":  true,
     "type":  "module",
     "description":  "Exposes the Harness model as an OpenAI-compatible endpoint so Folia can generate AI themes with it.",
@@ -32,6 +32,7 @@
                   "index.js",
                   "client.js",
                   "stats.js",
+                  "usage-store.js",
                   "sync-store.js",
                   "cordis.patch.yml",
                   "locale/*.json",

@@ -61,7 +61,7 @@ const post = (path, body, headers = {}) => {
   const { ctx, calls } = makeCtx({ chunks: [{ type: 'text-delta', index: 0, text: '{"light":' }, { type: 'text-delta', index: 0, text: '{} }' }, { type: 'usage', usage: { inputTokens: 11, outputTokens: 22 } }, { type: 'finish', reason: { kind: 'stop' } }] })
   apply(ctx, {})
   // 7 条 AI/设置路由 + 9 条同步路由
-  check('routes registered', routes.size === 16, `${routes.size}: ${[...routes.keys()].join(',')}`)
+  check('routes registered', routes.size === 20, `${routes.size}: ${[...routes.keys()].join(',')}`)
   const res = post('/v1/chat/completions', {
     model: 'deepseek-v4-flash',
     messages: [{ role: 'system', content: 'SYSTEM A' }, { role: 'user', content: 'LYRICS' }],

@@ -74,8 +74,8 @@ git clone https://github.com/songdongze/folia-ai-bridge.git folia-ai-bridge
 - **模型选择**：提供方与模型都留空 = 跟随 DSH 的默认模型；选定了就固定用这一个。
 - **思考强度**：默认「自动（取最低档，最省 token）」，也可以固定 low / medium / high 或干脆不指定。
 - **输出上限 / 温度**：输出上限与 Folia 请求里的 `max_tokens` 取较小值。
-- **用量详情**：请求次数、输入/输出/总 token、成功率，以及按模型分组的分条明细。
-- **最近请求**：最近 20 条的模型、token 数、耗时、流式与否、成功与否。
+- **用量与历史**：见下节。
+- **历史记录设置**：开关、明细保留天数、费用单价。
 
 **同步服务栏**
 - **连接信息**：Sync 地址 / 看板地址 / Bearer Token，同样一键复制；「检测连接」会真读一次同步库。
@@ -84,11 +84,41 @@ git clone https://github.com/songdongze/folia-ai-bridge.git folia-ai-bridge
 
 改完点「保存设置」，插件会自动重启一次让新配置生效。
 
+## 用量与历史
+
+用量分两轨，界面上「今日 / 近 7 天 / 近 30 天 / 总计」可切换：
+
+- **本次运行**：内存计数器，重启清零，界面上「清空统计」只清它。
+- **历史明细**：落到本机 SQLite，**DSH 重启不丢**，仅当前设备可见，不上传。
+
+历史面板提供：
+
+- **总览卡**：请求次数、输入/输出/总 token、成功率、预估费用；0 请求时成功率显示 `--`。
+- **趋势图**：近 7 天用量柱状图（Sparkline）。
+- **按模型汇总**：哪个模型最费 token，可对比次数、输入输出、失败数、平均耗时或费用。
+- **历史明细**：一行一次请求，含时间、模型、输入/输出/总 token、预估费用、耗时、流式与否、状态。
+- **图表视图**：模型 token 占比条形图 + 趋势图。
+- **导出 CSV**：按当前时间范围导出，带 BOM，Excel 直接打开不乱码。
+- **清空历史**：红色危险按钮 + 二次确认弹窗，删的是本机库里的明细与归档。
+
+### 费用估算
+
+DSH 本身不提供模型定价，所以单价由你在「历史记录设置」里手动填（元 / 百万 token）。
+填 0 则不显示费用列。费用只是估算，不影响实际请求。
+
+### 存储与保留
+
+- 默认位置：`~/.dsh/folia-sync/usage-history.db`（Windows 是 `%USERPROFILE%\.dsh\...`）。
+- 明细默认保留 30 天；更早的会先按月+模型聚合成归档，再删除明细，所以「总计」仍然统计得到。
+- 聚合是**写入时计数触发**（每 500 次写一次），不挂定时器，空闲零开销。
+- 不想留痕可在「历史记录设置」里关掉「记录历史」，届时只剩本次运行的内存统计。
+
 ## 用量统计的口径
 
 - 只统计**本插件转发**的请求，你在 DSH 里正常聊天不计数。
-- 只进内存计数器，**不落盘、不保存请求内容**，DSH 重启即清零；页面上的「清零」按钮可以随时手动清。
+- 不保存请求内容（不存 prompt、不存回答），只记时间、模型、token 数、耗时、状态这些计量字段。
 - 输入/输出 token 来自模型返回的 usage；某些模型或渠道不返回 usage 时，这两个数会是 0。
+- 缓存与推理 token（`cacheReadTokens` / `cacheWriteTokens` / `reasoningTokens`）也会一并记录，导出 CSV 里能看到。
 
 ## 行为约定
 
@@ -116,7 +146,11 @@ git clone https://github.com/songdongze/folia-ai-bridge.git folia-ai-bridge
 | `GET` | `/folia-ai/selfcheck` | 真跑一次模型 + 真读一次库，分别报 AI / 同步是否可用 |
 | `GET` | `/folia-ai/overview` | 设置页用：状态 + 用量 + 模型目录 + 同步存储 |
 | `POST` | `/folia-ai/config` | 设置页保存（同源校验，走 DSH 的配置编辑器） |
-| `POST` | `/folia-ai/stats/reset` | 用量清零 |
+| `POST` | `/folia-ai/stats/reset` | 只清本次运行的内存统计 |
+| `GET` | `/folia-ai/history?range=` | 历史用量：总计 + 按模型 + 按天趋势 + 最近明细 |
+| `GET` | `/folia-ai/history/page?range=&limit=&offset=` | 明细分页 |
+| `GET` | `/folia-ai/history/export?range=` | 导出 CSV（同源校验） |
+| `POST` | `/folia-ai/history/clear` | 清空历史明细与归档（同源校验） |
 
 **同步服务**（协议与官方一致）
 
@@ -150,6 +184,7 @@ git clone https://github.com/songdongze/folia-ai-bridge.git folia-ai-bridge
 ```powershell
 node selftest.mjs          # AI 接口离线自测（假 ctx/llm/res，不需要 DSH 在跑）
 node sync-selftest.mjs     # 同步存储自测（分桶/哈希/增量语义与官方逐位比对）
+node usage-selftest.mjs    # 用量历史自测（落盘、重开、聚合、分页、CSV、清空）
 node bench.mjs             # 单请求处理开销微基准
 node probe-folia-theme.mjs # 用 Folia 真实主题提示词打一次桥接，校验返回的 DualTheme
 ```

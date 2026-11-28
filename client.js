@@ -89,6 +89,36 @@ window.__ModuleLoader__.load({
 .fai-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: currentColor;
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
 .fai-status-text { font-weight: 600; font-size: 13px; }
+.fai-spark { display: flex; align-items: flex-end; gap: 2px; height: 36px; margin-top: 10px; }
+.fai-spark-bar { flex: 1; min-width: 2px; border-radius: 2px 2px 0 0; background: var(--dsw-alias-brand-primary);
+  opacity: .72; transition: opacity .12s; }
+.fai-spark-bar:hover { opacity: 1; }
+.fai-spark-empty { background: var(--dsw-alias-border-l2); opacity: .45; }
+.fai-bars { display: flex; flex-direction: column; gap: 10px; }
+.fai-bar-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.fai-bar-label { width: 140px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.fai-bar-track { flex: 1; height: 8px; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+.fai-bar-fill { height: 100%; border-radius: 4px; background: var(--dsw-alias-brand-primary); }
+.fai-bar-value { width: 84px; flex: none; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary); }
+.fai-warn-box { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--dsw-alias-state-warn-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent);
+  font-size: 12.5px; line-height: 1.7; }
+.fai-err-box { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+  font-size: 12.5px; line-height: 1.7; }
+.fai-btn-danger { background: var(--dsw-alias-state-error-primary); border-color: transparent; color: #fff; }
+.fai-btn-danger:hover { filter: brightness(1.06); background: var(--dsw-alias-state-error-primary); }
+.fai-scroll { max-height: 440px; overflow: auto; }
+.fai-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fai-chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.fai-chart-box { padding: 14px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1); }
+.fai-chart-title { font-size: 12.5px; color: var(--dsw-alias-label-secondary); margin-bottom: 12px; }
+.fai-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; font-size: 12px; }
+.fai-legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); }
+.fai-legend-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 `
 
     const fmtNum = (n) => {
@@ -111,6 +141,14 @@ window.__ModuleLoader__.load({
       const d = new Date(at)
       const pad = (n) => String(n).padStart(2, '0')
       return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    }
+
+    /** 带日期的短时间：跨天看历史时不会混淆。 */
+    const fmtDateTime = (at) => {
+      if (!at) return '—'
+      const d = new Date(at)
+      const pad = (n) => String(n).padStart(2, '0')
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
     }
 
     const useStyleOnce = () => {
@@ -381,38 +419,94 @@ window.__ModuleLoader__.load({
           providerField, modelField, effortField, maxTokensField, temperatureField, tokenField, actions))
     }
 
-    function UsageCard({ stats, busy, resetStats }) {
-      const totals = (stats && stats.totals) || { calls: 0, input: 0, output: 0, failed: 0 }
-      const models = (stats && stats.models) || []
-      const maxCalls = models.reduce((max, m) => Math.max(max, m.calls), 0) || 1
-      const successRate = totals.calls > 0 ? (totals.calls - totals.failed) / totals.calls : 0
+    /** 近 7 天用量柱状趋势（Sparkline）。 */
+    function Sparkline({ days, metric = 'calls' }) {
+      const list = Array.isArray(days) ? days : []
+      const max = list.reduce((m, d) => Math.max(m, d[metric] || 0), 0) || 1
+      const bars = list.map((d) => {
+        const value = d[metric] || 0
+        const height = value === 0 ? 6 : Math.max(6, Math.round((value / max) * 100))
+        return h('div', {
+          key: d.day,
+          className: 'fai-spark-bar' + (value === 0 ? ' fai-spark-empty' : ''),
+          style: { height: height + '%' },
+          title: `${d.day} · ${fmtNum(value)}`,
+        })
+      })
+      return h('div', { className: 'fai-spark' }, bars)
+    }
 
-      const grid = h('div', { className: 'fai-stat-grid' },
+    /** 横向条形对比图（按模型）。 */
+    function ModelBars({ models, metric = 'total' }) {
+      const list = Array.isArray(models) ? models : []
+      if (list.length === 0) return h('div', { className: 'fai-empty' }, '这个时间段没有数据')
+      const max = list.reduce((m, x) => Math.max(m, x[metric] || 0), 0) || 1
+      return h('div', { className: 'fai-bars' },
+        list.map((m) => h('div', { key: m.provider + '/' + m.model, className: 'fai-bar-row' },
+          h('span', { className: 'fai-bar-label', title: m.model }, m.model),
+          h('div', { className: 'fai-bar-track' },
+            h('div', { className: 'fai-bar-fill', style: { width: Math.max(2, ((m[metric] || 0) / max) * 100) + '%' } })),
+          h('span', { className: 'fai-bar-value' }, fmtNum(m[metric] || 0)))))
+    }
+
+    /** 费用估算：单价由用户在设置里填，DSH 本身不提供定价。 */
+    const costOf = (row, prices) => {
+      const pin = (prices && prices.inputPerM) || 0
+      const pout = (prices && prices.outputPerM) || 0
+      if (!pin && !pout) return null
+      return ((row.input || 0) / 1e6) * pin + ((row.output || 0) / 1e6) * pout
+    }
+
+    const fmtCost = (value) => (value === null || value === undefined ? '—' : '¥' + value.toFixed(4))
+
+    function UsageCard({ stats, history, range, setRange, chartView, setChartView, busy, resetStats, onNavigate, flash }) {
+      const totals = (history && history.totals) || (stats && stats.totals) || { calls: 0, input: 0, output: 0, failed: 0 }
+      const models = (history && history.models) || []
+      const days = (history && history.days) || []
+      const records = (history && history.records) || []
+      const prices = (history && history.prices) || { inputPerM: 0, outputPerM: 0 }
+      const persisted = Boolean(history && history.persisted)
+      const successRate = totals.calls > 0 ? (totals.calls - totals.failed) / totals.calls : 0
+      const totalCost = costOf(totals, prices)
+
+      const rangeTabs = h('div', { className: 'fai-tabs' },
+        [['today', '今日'], ['7d', '近 7 天'], ['30d', '近 30 天'], ['all', '总计']].map(([key, label]) =>
+          h('button', {
+            key,
+            className: 'fai-tab' + (range === key ? ' is-active' : ''),
+            onClick: () => setRange(key),
+          }, label)))
+
+      const viewTabs = h('div', { className: 'fai-tabs' },
+        [['list', '列表'], ['chart', '图表']].map(([key, label]) =>
+          h('button', {
+            key,
+            className: 'fai-tab' + (chartView === key ? ' is-active' : ''),
+            onClick: () => setChartView(key),
+          }, label)))
+
+      const statCards = h('div', { className: 'fai-stat-grid' },
         h(Stat, { key: 'calls', label: '请求次数', value: fmtNum(totals.calls) }),
         h(Stat, { key: 'in', label: '输入 token', value: fmtNum(totals.input) }),
         h(Stat, { key: 'out', label: '输出 token', value: fmtNum(totals.output) }),
-        h(Stat, { key: 'total', label: '总 token', value: fmtNum(totals.input + totals.output) }),
+        h(Stat, { key: 'total', label: '总 token', value: fmtNum(totals.total ?? (totals.input + totals.output)) }),
         h(Stat, {
           key: 'rate',
           label: '成功率',
-          value: totals.calls ? Math.round(successRate * 100) + '%' : '—',
-          hint: totals.failed ? totals.failed + ' 次失败' : '无失败',
-          ratio: totals.calls ? successRate : 0,
-        }))
+          // 0 请求时显示 --，不再显示「无失败」
+          value: totals.calls > 0 ? Math.round(successRate * 100) + '%' : '--',
+          hint: totals.calls === 0 ? '暂无请求' : (totals.failed ? totals.failed + ' 次失败' : '无失败'),
+          ratio: totals.calls > 0 ? successRate : 0,
+        }),
+        totalCost !== null
+          ? h(Stat, { key: 'cost', label: '预估费用', value: fmtCost(totalCost) })
+          : null)
 
-      const rows = models.map((m) => h('tr', { key: m.provider + '/' + m.model },
-        h('td', null,
-          h('div', { className: 'fai-model-name' }, m.model),
-          h('div', { className: 'fai-card-hint' }, m.provider),
-          h('div', { className: 'fai-mini-bar' },
-            h('i', { style: { width: Math.max(3, (m.calls / maxCalls) * 100) + '%' } }))),
-        h('td', { className: 'num' }, fmtNum(m.calls)),
-        h('td', { className: 'num' }, fmtNum(m.input)),
-        h('td', { className: 'num' }, fmtNum(m.output)),
-        h('td', { className: 'num' + (m.failed ? ' fai-err' : '') }, m.failed ? String(m.failed) : '—'),
-        h('td', { className: 'num' }, fmtClock(m.lastAt))))
+      const trendCard = h('div', { className: 'fai-chart-box' },
+        h('div', { className: 'fai-chart-title' }, '近 7 天请求趋势'),
+        h(Sparkline, { days: days.slice(-7), metric: 'calls' }))
 
-      const table = models.length > 0
+      const modelList = models.length > 0
         ? h('table', { className: 'fai-table' },
           h('thead', null,
             h('tr', null,
@@ -421,25 +515,109 @@ window.__ModuleLoader__.load({
               h('th', { className: 'num' }, '输入'),
               h('th', { className: 'num' }, '输出'),
               h('th', { className: 'num' }, '失败'),
-              h('th', { className: 'num' }, '最近'))),
-          h('tbody', null, rows))
-        : h('div', { className: 'fai-empty' }, '还没有转发过请求。在 Folia 里触发生成主题后，这里会出现明细。')
+              h('th', { className: 'num' }, prices.inputPerM || prices.outputPerM ? '费用' : '平均耗时'))),
+          h('tbody', null, models.map((m) => h('tr', { key: m.provider + '/' + m.model },
+            h('td', null,
+              h('div', { className: 'fai-model-name' }, m.model),
+              h('div', { className: 'fai-card-hint' }, m.provider)),
+            h('td', { className: 'num' }, fmtNum(m.calls)),
+            h('td', { className: 'num' }, fmtNum(m.input)),
+            h('td', { className: 'num' }, fmtNum(m.output)),
+            h('td', { className: 'num' + (m.failed ? ' fai-err' : '') }, m.failed ? String(m.failed) : '—'),
+            h('td', { className: 'num' }, prices.inputPerM || prices.outputPerM
+              ? fmtCost(costOf(m, prices))
+              : (m.avgMs >= 1000 ? (m.avgMs / 1000).toFixed(1) + 's' : m.avgMs + 'ms'))))))
+        : h('div', { className: 'fai-empty' }, '这个时间段还没有请求。在 Folia 里触发生成主题后，这里会出现明细。')
 
-      const body = table
+      const detailRows = records.map((r) => {
+        const cost = costOf(r, prices)
+        return h('tr', { key: String(r.id) },
+          h('td', { className: 'fai-mono-sm' }, fmtDateTime(r.at)),
+          h('td', null, h('div', { className: 'fai-model-name' }, r.model),
+            h('div', { className: 'fai-card-hint' }, r.provider)),
+          h('td', { className: 'num' }, fmtNum(r.input)),
+          h('td', { className: 'num' }, fmtNum(r.output)),
+          h('td', { className: 'num' }, fmtNum(r.total)),
+          cost !== null ? h('td', { className: 'num' }, fmtCost(cost)) : null,
+          h('td', { className: 'num' }, r.ms >= 1000 ? (r.ms / 1000).toFixed(1) + 's' : r.ms + 'ms'),
+          h('td', null, r.stream ? '流式' : '一次性'),
+          h('td', { className: r.ok ? 'fai-ok' : 'fai-err' }, r.ok ? '成功' : '失败'))
+      })
+
+      const detailTable = records.length > 0
+        ? h('div', { className: 'fai-scroll' },
+          h('table', { className: 'fai-table' },
+            h('thead', null,
+              h('tr', null,
+                h('th', null, '时间'),
+                h('th', null, '模型'),
+                h('th', { className: 'num' }, '输入'),
+                h('th', { className: 'num' }, '输出'),
+                h('th', { className: 'num' }, '总'),
+                prices.inputPerM || prices.outputPerM ? h('th', { className: 'num' }, '费用') : null,
+                h('th', { className: 'num' }, '耗时'),
+                h('th', null, '类型'),
+                h('th', null, '状态'))),
+            h('tbody', null, detailRows)))
+        : h('div', { className: 'fai-empty' }, '暂无明细记录')
+
+      const chartPanel = h('div', { className: 'fai-chart-grid' },
+        trendCard,
+        h('div', { className: 'fai-chart-box' },
+          h('div', { className: 'fai-chart-title' }, '各模型 token 占比'),
+          h(ModelBars, { models, metric: 'total' })))
+
+      const listPanel = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+        h('div', { className: 'fai-chart-box' },
+          h('div', { className: 'fai-chart-title' }, '按模型汇总'),
+          modelList),
+        h('div', { className: 'fai-chart-box', style: { padding: 0 } },
+          h('div', { className: 'fai-chart-title', style: { padding: '14px 14px 0' } }, '历史明细'),
+          detailTable))
+
+      const hint = persisted
+        ? `历史记录保存在本机（${history && history.retentionDays ? history.retentionDays : 30} 天明细），DSH 重启后不会丢失，仅限当前设备可见。`
+        : '当前未开启历史落盘，下面只有本次运行的统计，DSH 重启后会清零。'
+
+      const headerActions = h('div', { className: 'fai-inline' },
+        h('button', {
+          className: 'fai-btn',
+          disabled: busy || !persisted || !totals.calls,
+          onClick: () => onNavigate('history-export', range),
+          title: '把当前时间范围的明细导出成 CSV',
+        }, '导出 CSV'),
+        h('button', {
+          className: 'fai-btn',
+          disabled: busy || !totals.calls,
+          onClick: resetStats,
+          title: '只清本次运行的统计，不影响历史记录',
+        }, '清空统计'))
 
       return h('div', { className: 'fai-card' },
         h('div', { className: 'fai-card-head' },
           h('div', null,
-            h('div', { className: 'fai-card-title' }, '用量详情'),
-            h('div', { className: 'fai-card-hint' }, '只统计本插件转发的请求，只存内存、不落盘，DSH 重启即清零。')),
-          h('button', {
-            className: 'fai-btn',
-            disabled: busy || !totals.calls,
-            onClick: resetStats,
-          }, '清零')),
+            h('div', { className: 'fai-card-title' }, '用量与历史'),
+            h('div', { className: 'fai-card-hint' }, hint)),
+          headerActions),
         h('div', { className: 'fai-card-body' },
-          grid,
-          h('div', { className: 'fai-card-body-flush' }, body)))
+          h('div', { className: 'fai-inline', style: { justifyContent: 'space-between' } },
+            rangeTabs,
+            viewTabs),
+          statCards,
+          !persisted
+            ? h('div', { className: 'fai-warn-box' },
+              '历史落盘已关闭。到「设置」标签页打开「记录历史明细」后，用量会保存到本机数据库，重启不丢。')
+            : null,
+          chartView === 'chart' ? chartPanel : listPanel,
+          h('div', { className: 'fai-inline', style: { justifyContent: 'space-between' } },
+            h('span', { className: 'fai-card-hint' },
+              history && history.dbPath ? '数据库：' + history.dbPath : ''),
+            h('button', {
+              className: 'fai-btn',
+              disabled: busy || !persisted,
+              onClick: () => onNavigate('history-clear'),
+              style: { color: 'var(--dsw-alias-state-error-primary)' },
+            }, '清空历史记录…'))))
     }
 
     function RecentCard({ stats }) {
@@ -596,6 +774,104 @@ window.__ModuleLoader__.load({
               h('span', { className: 'fai-card-hint' }, '主题：' + lastAt + '　设置：' + settingsAt)))))
     }
 
+    /** 历史记录的开关、保留天数、费用单价。 */
+    function HistorySettingsCard({ draft, setDraft, busy, save, status, history }) {
+      const enabled = draft?.historyEnabled !== false
+
+      const toggleRow = h('div', { className: 'fai-row' },
+        h('div', { className: 'fai-row-label' }, '记录历史'),
+        h('div', { className: 'fai-row-body' },
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' } },
+            h('input', {
+              type: 'checkbox',
+              checked: enabled,
+              disabled: !draft || busy,
+              onChange: (e) => setDraft((prev) => ({ ...prev, historyEnabled: e.target.checked })),
+            }),
+            h('span', null, enabled ? '已开启' : '已关闭')),
+          h('span', { className: 'fai-card-hint' }, '关闭后不再落盘，只剩本次运行的内存统计')))
+
+      const retentionRow = h(Field, { label: '明细保留' },
+        h('input', {
+          className: 'fai-input', type: 'number', min: 1, max: 3650, step: 1,
+          value: draft?.historyRetentionDays ?? 30,
+          disabled: !draft || busy || !enabled,
+          onChange: (e) => setDraft((prev) => ({ ...prev, historyRetentionDays: Number(e.target.value) })),
+        }),
+        h('span', { className: 'fai-card-hint' }, '天。更早的明细会按月聚合后删除，总览仍统计得到'))
+
+      const priceRowIn = h(Field, { label: '输入单价' },
+        h('input', {
+          className: 'fai-input', type: 'number', min: 0, step: 0.01,
+          value: draft?.priceInputPerM ?? 0,
+          disabled: !draft || busy,
+          onChange: (e) => setDraft((prev) => ({ ...prev, priceInputPerM: Number(e.target.value) })),
+        }),
+        h('span', { className: 'fai-card-hint' }, '元 / 百万 token，只用于估算，不影响实际请求'))
+
+      const priceRowOut = h(Field, { label: '输出单价' },
+        h('input', {
+          className: 'fai-input', type: 'number', min: 0, step: 0.01,
+          value: draft?.priceOutputPerM ?? 0,
+          disabled: !draft || busy,
+          onChange: (e) => setDraft((prev) => ({ ...prev, priceOutputPerM: Number(e.target.value) })),
+        }),
+        h('span', { className: 'fai-card-hint' }, '元 / 百万 token。填 0 则不显示费用列'))
+
+      const dbPath = (history && history.dbPath) || (status && status.historyDbPath) || ''
+
+      const infoRow = h('div', { className: 'fai-row' },
+        h('div', { className: 'fai-row-label' }, '存储位置'),
+        h('div', { className: 'fai-row-body' },
+          h('span', { className: 'fai-card-hint', style: { fontFamily: 'ui-monospace,monospace', wordBreak: 'break-all' } },
+            dbPath || '（尚未创建）'),
+          history && history.sizeBytes > 0
+            ? h('span', { className: 'fai-card-hint' }, `占用 ${(history.sizeBytes / 1024).toFixed(1)} KB`)
+            : null))
+
+      const actions = h('div', { className: 'fai-row' },
+        h('div', { className: 'fai-row-body', style: { justifyContent: 'flex-end' } },
+          h('button', { className: 'fai-btn fai-btn-primary', disabled: busy || !draft, onClick: save },
+            busy ? '保存中…' : '保存历史设置')))
+
+      return h('div', { className: 'fai-card' },
+        h('div', { className: 'fai-card-head' },
+          h('div', null,
+            h('div', { className: 'fai-card-title' }, '历史记录设置'),
+            h('div', { className: 'fai-card-hint' },
+              '明细存在本机 SQLite，DSH 重启不丢；仅当前设备可见，不上传任何地方。'))),
+        h('div', { className: 'fai-card-body' },
+          toggleRow, retentionRow, priceRowIn, priceRowOut, infoRow, actions))
+    }
+
+    /** 清空历史的二次确认。 */
+    function ConfirmClearDialog({ open, busy, onCancel, onConfirm }) {
+      if (!open) return null
+      return h('div', {
+        style: {
+          position: 'fixed', inset: 0, zIndex: 60, display: 'grid', placeItems: 'center',
+          background: 'rgba(0,0,0,.45)', padding: 24,
+        },
+        onClick: (e) => { if (e.target === e.currentTarget && !busy) onCancel() },
+      },
+      h('div', {
+        role: 'dialog',
+        'aria-modal': 'true',
+        style: {
+          width: 'min(440px, 100%)', padding: 20, borderRadius: 12,
+          background: 'var(--dsw-alias-bg-overlay)', border: '1px solid var(--dsw-alias-border-l2)',
+          boxShadow: '0 12px 32px rgba(0,0,0,.36)', display: 'flex', flexDirection: 'column', gap: 14,
+        },
+      },
+      h('div', { style: { fontWeight: 620, fontSize: 14 } }, '清空全部历史记录？'),
+      h('div', { className: 'fai-card-hint', style: { lineHeight: 1.7 } },
+        '这会删除本机数据库里的全部用量明细与按月归档，无法恢复。当前运行的统计也会一并清零。'),
+      h('div', { className: 'fai-inline', style: { justifyContent: 'flex-end' } },
+        h('button', { className: 'fai-btn', disabled: busy, onClick: onCancel }, '取消'),
+        h('button', { className: 'fai-btn fai-btn-danger', disabled: busy, onClick: onConfirm },
+          busy ? '删除中…' : '确认清空'))))
+    }
+
     function SettingsPage() {
       useStyleOnce()
       const [data, setData] = useState(null)
@@ -604,6 +880,10 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState(null)
       const [draft, setDraft] = useState(null)
       const [activeTab, setActiveTab] = useState('ai')
+      const [history, setHistory] = useState(null)
+      const [range, setRange] = useState('7d')
+      const [chartView, setChartView] = useState('list')
+      const [pendingClear, setPendingClear] = useState(null)
       const alive = useRef(true)
 
       const load = useCallback(async () => {
@@ -626,23 +906,47 @@ window.__ModuleLoader__.load({
             syncEnabled: next.status.syncEnabled !== false,
             syncToken: '',
             dashboardToken: '',
+            historyEnabled: next.status.historyEnabled !== false,
+            historyRetentionDays: next.status.historyRetentionDays ?? 30,
+            priceInputPerM: next.status.prices ? next.status.prices.inputPerM : 0,
+            priceOutputPerM: next.status.prices ? next.status.prices.outputPerM : 0,
           })
         } catch (e) {
           if (alive.current) setError(e && e.message ? e.message : String(e))
         }
       }, [])
 
-      useEffect(() => {
-        alive.current = true
-        void load()
-        // 只在页面打开时取一次：不轮询，避免设置页常驻 CPU。
-        return () => { alive.current = false }
-      }, [load])
-
       const flash = useCallback((text, kind) => {
         setToast({ text, kind: kind || 'ok' })
         setTimeout(() => setToast(null), 2400)
       }, [])
+
+      /** 历史用量：切换时间范围时重新取。 */
+      const loadHistory = useCallback(async (nextRange) => {
+        try {
+          const res = await fetch(`${ENDPOINT}/history?range=${encodeURIComponent(nextRange)}`, {
+            headers: { accept: 'application/json' },
+          })
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          const payload = await res.json()
+          if (alive.current) setHistory(payload)
+        } catch (e) {
+          if (alive.current) flash('读取历史失败：' + ((e && e.message) || e), 'err')
+        }
+      }, [flash])
+
+      useEffect(() => {
+        alive.current = true
+        void load()
+        void loadHistory('7d')
+        // 只在页面打开时取一次：不轮询，避免设置页常驻 CPU。
+        return () => { alive.current = false }
+      }, [load, loadHistory])
+
+      /** 切换范围时重取历史。 */
+      useEffect(() => {
+        if (data) void loadHistory(range)
+      }, [range, data, loadHistory])
 
       const save = useCallback(async () => {
         if (!draft) return
@@ -674,13 +978,65 @@ window.__ModuleLoader__.load({
           })
           if (!res.ok) throw new Error('HTTP ' + res.status)
           await load()
-          flash('用量已清零', 'ok')
+          flash('本次运行的统计已清零（历史记录保留）', 'ok')
         } catch (e) {
           flash((e && e.message) || '清零失败', 'err')
         } finally {
           setBusy(false)
         }
       }, [flash, load])
+
+      /** 导出 CSV：走后端直出文件，避免前端拼大字符串。 */
+      const exportCsv = useCallback(async (exportRange) => {
+        setBusy(true)
+        try {
+          const res = await fetch(`${ENDPOINT}/history/export?range=${encodeURIComponent(exportRange)}`)
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          const stamp = new Date().toISOString().slice(0, 10)
+          a.href = url
+          a.download = `folia-ai-usage-${exportRange}-${stamp}.csv`
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          setTimeout(() => URL.revokeObjectURL(url), 4000)
+          flash('CSV 已开始下载', 'ok')
+        } catch (e) {
+          flash((e && e.message) || '导出失败', 'err')
+        } finally {
+          setBusy(false)
+        }
+      }, [flash])
+
+      /** 清空历史：必须经过确认对话框。 */
+      const clearHistory = useCallback(async () => {
+        setBusy(true)
+        try {
+          const res = await fetch(ENDPOINT + '/history/clear', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          })
+          const payload = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(payload.error || 'HTTP ' + res.status)
+          await load()
+          await loadHistory(range)
+          flash(`已删除 ${payload.removed || 0} 条历史记录`, 'ok')
+        } catch (e) {
+          flash((e && e.message) || '清空失败', 'err')
+        } finally {
+          setBusy(false)
+          setPendingClear(null)
+        }
+      }, [flash, load, loadHistory, range])
+
+      /** 用量卡上的导航动作（导出 / 清空历史）。 */
+      const onNavigate = useCallback((action, actionRange) => {
+        if (action === 'history-export') void exportCsv(actionRange || range)
+        else if (action === 'history-clear') setPendingClear(true)
+      }, [exportCsv, range])
 
       /**
        * 真实连通性检测：调 Host 的 /folia-ai/selfcheck，
@@ -768,8 +1124,19 @@ window.__ModuleLoader__.load({
           onCopied: flashCopied,
         }),
         h(ModelCard, { status, providers, draft, setDraft, busy, save, toast: null }),
-        h(UsageCard, { stats: data && data.stats, busy, resetStats }),
-        h(RecentCard, { stats: data && data.stats }))
+        h(UsageCard, {
+          stats: data && data.stats,
+          history,
+          range,
+          setRange,
+          chartView,
+          setChartView,
+          busy,
+          resetStats,
+          onNavigate,
+          flash,
+        }),
+        h(HistorySettingsCard, { draft, setDraft, busy, save, status, history }))
 
       const syncPanel = h('div', { className: 'fai-panel', role: 'tabpanel' },
         h(ConnectCard, {
@@ -791,6 +1158,12 @@ window.__ModuleLoader__.load({
           tab('ai', 'AI 主题', callCount > 0 ? String(callCount) : null),
           tab('sync', '同步服务', themeCount > 0 ? String(themeCount) : null)),
         activeTab === 'ai' ? aiPanel : syncPanel,
+        h(ConfirmClearDialog, {
+          open: Boolean(pendingClear),
+          busy,
+          onCancel: () => setPendingClear(null),
+          onConfirm: clearHistory,
+        }),
         toast ? h('div', { className: 'fai-toast ' + (toast.kind === 'err' ? 'fai-err' : 'fai-ok') }, toast.text) : null)
     }
 
